@@ -1,6 +1,6 @@
 // colyseus
 import { Client, Room } from "colyseus.js";
-import { isLocal } from "../Utils";
+import { socketUrl } from "../Utils";
 import { ServerMsg } from "../../shared/types";
 
 export class Network {
@@ -8,11 +8,11 @@ export class Network {
 
     constructor(port) {
         // create colyseus client
-        let url = "wss://" + window.location.hostname;
-        if (isLocal()) {
-            url = "ws://localhost:" + port;
-        }
-        this._client = new Client(url);
+        //
+        // The socket does not necessarily point at wherever the page came from:
+        // hosted as an example, the client is static on one origin and the rooms
+        // run on another.
+        this._client = new Client(socketUrl(port));
     }
 
     public async joinRoom(roomId, token, character_id): Promise<any> {

@@ -2,14 +2,18 @@
     "compileOnSave": true,
     "compilerOptions": {
         "target": "ES6",
-        "module": "CommonJS",
+        // The SDK is ESM and declares its entry points through `exports`, which
+        // the old "node" resolver does not read — it looks for `main` at the
+        // package root, finds nothing, and reports the module as missing. Both
+        // build paths here are bundlers, so resolve the way they do.
+        "module": "ESNext",
+        "moduleResolution": "Bundler",
         "sourceMap": false,
         "outDir": "./dist/server",
         "strict": false,
         "experimentalDecorators": true,
         "esModuleInterop": true,
         "allowJs": true,
-        "moduleResolution": "node",
         "types": ["node"],
         "typeRoots": ["node_modules/@types"],
         "baseUrl": ".",

@@ -7,7 +7,10 @@ import { ParsedQs } from "qs";
 import { InventorySchema } from "./rooms/schema/player/InventorySchema";
 import { AbilitySchema } from "./rooms/schema/player/AbilitySchema";
 import { EquipmentSchema, HotbarSchema, PlayerSchema, QuestSchema } from "./rooms/schema";
-import { MapSchema } from "@colyseus/schema/lib/types/MapSchema";
+// The package's own entry point rather than a path inside it: @colyseus/schema
+// declares `exports`, so reaching past it only resolved under the legacy
+// resolver and stops the moment anything modern looks at it.
+import { MapSchema } from "@colyseus/schema";
 import { Config } from "../shared/Config";
 
 class Database {
