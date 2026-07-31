@@ -38,7 +38,12 @@ const options = {
 
   // Native addons cannot be bundled, and neither can anything that reads its own
   // files off disk at runtime.
-  external: ['sqlite3', 'mysql2', 'better-sqlite3'],
+  //
+  // @colyseus/monitor is the second kind: it resolves its static assets from
+  // `__dirname`, which in a bundle would point at dist/server rather than at the
+  // package. Defining `__dirname` in the banner would silence the crash and
+  // leave it looking in the wrong directory, so it stays a real require instead.
+  external: ['sqlite3', 'mysql2', 'better-sqlite3', '@colyseus/monitor'],
 
   // bananojs is CommonJS and reaches for `crypto` through a bare `require` that
   // survives bundling. ESM output has no `require`, so give it one.

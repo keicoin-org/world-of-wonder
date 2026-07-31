@@ -17,7 +17,8 @@
         "server-build": "node scripts/build-server.mjs",
         "test:economy": "node scripts/build-server.mjs --entry src/server/kei/Economy.test.ts --out dist/test/economy.mjs && node dist/test/economy.mjs",
         "test": "npm run test:economy",
-        "loadtest": "npx tsx loadtest/test.ts --room game_room --numClients 10 --endpoint ws://localhost:3000"
+        "loadtest": "npx tsx loadtest/test.ts --room game_room --numClients 10 --endpoint ws://localhost:3000",
+        "test:e2e": "node scripts/build-server.mjs --entry src/server/kei/endtoend.test.ts --out dist/test/e2e.mjs && node dist/test/e2e.mjs"
     },
     "author": "Orion3d, Kei",
     "license": "MIT",
