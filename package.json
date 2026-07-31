@@ -1,22 +1,25 @@
 {
-    "name": "t5c",
-    "version": "0.4.0",
+    "name": "kei-mmo-template",
+    "version": "0.1.0",
     "repository": {
-        "url": "git+https://github.com/orion3dgames/t5c.git"
+        "url": "git+https://github.com/keicoin-org/kei-mmo-template.git"
     },
-    "description": "Building a basic multiplayer 3d top down rpg using babylon.js and colyseus",
+    "description": "A multiplayer 3d top down rpg whose currency and items live on a chain. Forked from orion3dgames/t5c.",
     "main": "./dist/client/index.html",
     "scripts": {
+        "link-sdk": "node scripts/link-sdk.mjs",
         "client-dev": "webpack serve --open --config webpack.dev.js",
         "client-start": "webpack serve --open --config webpack.dev.js",
         "client-build": "webpack --config webpack.prod.js",
-        "server-debug": "ts-node-dev --respawn --inspect --transpile-only src/server/index.ts",
-        "server-dev": "ts-node-dev --respawn --inspect --transpile-only src/server/index.ts",
-        "server-start": "ts-node --transpile-only src/server/index.ts",
-        "server-build": "tsc && cp -r public dist",
+        "server-debug": "node scripts/build-server.mjs --watch",
+        "server-dev": "node scripts/build-server.mjs --watch",
+        "server-start": "node dist/server/index.mjs",
+        "server-build": "node scripts/build-server.mjs",
+        "test:economy": "node scripts/build-server.mjs --entry src/server/kei/Economy.test.ts --out dist/test/economy.mjs && node dist/test/economy.mjs",
+        "test": "npm run test:economy",
         "loadtest": "npx tsx loadtest/test.ts --room game_room --numClients 10 --endpoint ws://localhost:3000"
     },
-    "author": "Orion3d",
+    "author": "Orion3d, Kei",
     "license": "MIT",
     "devDependencies": {
         "@babylonjs/gui-editor": "8.28.3",
@@ -32,6 +35,7 @@
         "@types/react-dom": "^18.3.0",
         "axios": "^1.12.2",
         "copy-webpack-plugin": "^12.0.2",
+        "esbuild": "^0.28.1",
         "ts-loader": "^9.5.1",
         "ts-node": "^10.9.2",
         "ts-node-dev": "^2.0.0",
@@ -47,6 +51,7 @@
         "@babylonjs/gui": "8.28.3",
         "@babylonjs/loaders": "8.28.3",
         "@babylonjs/serializers": "8.28.3",
+        "@bananocoin/bananojs": "^2.10.10",
         "babylonjs-gltf2interface": "8.28.3",
         "colyseus": "^0.15.57",
         "colyseus.js": "^0.15.28",
