@@ -94,18 +94,24 @@ import is a direct dependency held at `^3.3.8` — the first patched release —
 the code in `src/` resolves to 3.3.16 and is out of range regardless of what
 Colyseus carries underneath it.
 
-Nano ID 3 removes the advisory and cannot be forced into place. Its CommonJS
-export is an object of named functions where 2.x exported the function itself,
-and `@colyseus/core` calls it as one — with `overrides` pointing that dependency
-at `^3.3.8`, `generateId()` throws
-`TypeError: (0 , import_nanoid.default) is not a function`. `MatchMaker` calls
-it while assigning `processId`, so the server dies on `listen()` rather than
-somewhere quiet. Widening that to a top-level `"nanoid"` override does not even
-get as far as running: npm refuses it with `EOVERRIDE — Override for
-nanoid@^3.0.0 conflicts with direct dependency`. npm's own suggested fix is the
-breaking Colyseus 0.17 line, which wants `@colyseus/schema@^4` against the
-`^2.0.37` the eleven files that declare `@type()` fields are written for, plus
-`colyseus.js` on the client moving in lockstep with the wire format.
+Nano ID 3 removes the advisory, and an `overrides` entry does install it — npm
+collapses the nested copy and `npm audit --omit=dev` comes back clean. It also
+breaks the server. Nano ID 2 exported the function itself; 3 exports an object
+of named functions, and `@colyseus/core` calls it the old way, so the built
+server dies before it listens:
+
+```
+TypeError: (0 , import_nanoid5.default) is not a function
+    at generateId3 (dist/server/index.mjs)
+    at Object.setup            ← MatchMaker, assigning processId
+    at new Server3
+```
+
+A clean audit bought by a server that exits 1 on startup is worse than the
+advisory. npm's own suggested fix is the breaking Colyseus 0.17 line, which
+wants `@colyseus/schema@^4` against the `^2.0.37` the eleven files that declare
+`@type()` fields are written for, plus `colyseus.js` on the client moving in
+lockstep with the wire format.
 
 The remaining moderate is therefore documented rather than papered over, until a
 tested Colyseus migration can replace the 0.15 networking stack. Rerun
@@ -115,16 +121,20 @@ Everything else the audit used to report is gone rather than suppressed:
 
 | | |
 |---|---|
-| `sqlite3` 5 → 6 | Drops `node-gyp`, and with it `tar`, `cacache`, `make-fetch-happen`, `http-proxy-agent`, and `@tootallnate/once` — one critical and five more advisories, none of them in code that ever ran. |
+| `sqlite3` 5 → 6 | Swaps `node-pre-gyp` for `prebuild-install` and `node-gyp@12`, which takes `cacache`, `make-fetch-happen`, `http-proxy-agent`, and `@tootallnate/once` out of the tree entirely and moves `tar` to a patched 7.5.22 — the one critical and five of the highs, all of them in install-time machinery rather than in anything the server runs. It also sets the floor at Node 20.17. |
 | `express` → 4.22.2 | `path-to-regexp`, `body-parser`, and `qs`. |
 | dropped the `colyseus` umbrella | The two things imported from it, `generateId` and `Client`, are `@colyseus/core`'s own exports. The umbrella also pulled in `@colyseus/auth` → `grant` → `jwk-to-pem`/`request-oauth`, along with both Redis drivers, none of which this server mounts. |
 | dropped `@bananocoin/bananojs` and `fs-extra` | The first now arrives through the SDK at one version instead of two; the second was imported nowhere. |
-| `ws` | Resolves to 7.5.13 and 8.21.1, both patched, once the tree above is settled. |
+| dropped `dotenv-webpack` | Declared, never used, and the wrong tool for this repo: it inlines whatever is in `.env` into the browser bundle, and `.env` is where `KEI_GAME_SEED` lives. `webpack.common.js` reads `.env` with plain `dotenv` and passes exactly one variable through `DefinePlugin`. |
+| `ws` | 7.5.13 under `@colyseus/core` and 8.21.1 under the transport and the client, both patched, once the tree above settles. |
 
 Two development-only advisories are handled the same way: `copy-webpack-plugin`
 moves to 14 for a fixed `serialize-javascript`, and `webpack-dev-server`'s
 `sockjs` gets an `overrides` bump to `uuid@11`, which it uses only as
 `require('uuid').v4()`.
+
+The count, `npm audit` with everything included: 47 → 3, and all three are the
+one `nanoid` chain above.
 
 ## Hosting it
 
