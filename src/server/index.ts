@@ -4,7 +4,6 @@ import express from "express";
 import cors from "cors";
 
 import { Server, matchMaker } from "@colyseus/core";
-import { monitor } from "@colyseus/monitor";
 
 import { WebSocketTransport } from "@colyseus/ws-transport";
 import { GameRoom } from "./rooms/GameRoom";
@@ -102,7 +101,12 @@ class GameServer {
 
         // start dev routes
         if (process.env.NODE_ENV !== "production") {
-            // start monitor
+            // Loaded here rather than at the top of the file so a production
+            // deployment does not need the package at all. The monitor is a
+            // development tool that drags in @colyseus/core as a peer, and an
+            // unauthenticated view of every room is not something to ship and
+            // rely on an `if` to hide.
+            const { monitor } = await import("@colyseus/monitor");
             app.use("/colyseus", monitor());
 
             // bind it as an express middleware

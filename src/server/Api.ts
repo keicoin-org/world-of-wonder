@@ -189,9 +189,18 @@ class Api {
         });
 
         app.get("/getHelpPage", function (req, res) {
-            let page = req.query.page;
-            let src = path.join(__dirname + "/../shared/Help/");
-            res.sendFile(src + "/" + page + ".html");
+            // Read from the working directory for the same reason the navmesh is:
+            // there is no `__dirname` in the bundled server, and the directory
+            // depth it assumed no longer exists.
+            //
+            // The page name comes from the query string and is about to become a
+            // file path, so it is matched against a safe shape rather than
+            // trusted — `?page=../../.env` is otherwise a file read.
+            let page = String(req.query.page ?? "");
+            if (!/^[a-zA-Z0-9_-]+$/.test(page)) {
+                return res.status(400).send("No such help page.");
+            }
+            res.sendFile(path.join(process.cwd(), "src/shared/Help/", page + ".html"));
         });
 
         app.get("/load_game_data", (req, res) => {
