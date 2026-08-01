@@ -3,7 +3,7 @@ import { Image } from "@babylonjs/gui/2D/controls/image";
 import { TextBlock } from "@babylonjs/gui/2D/controls/textBlock";
 import { Control } from "@babylonjs/gui/2D/controls/control";
 import { Grid } from "@babylonjs/gui/2D/controls/grid";
-import { Item, ServerMsg } from "../../../../shared/types";
+import { Item } from "../../../../shared/types";
 import { Rarity } from "../../../../shared/Class/Rarity";
 import { Panel } from "./Panel";
 
@@ -243,13 +243,10 @@ export class Panel_Inventory extends Panel {
             // on hover tooltip
             child.onPointerClickObservable.clear();
             child.onPointerClickObservable.add((e) => {
-                if (child.metadata.item && e.buttonIndex === 0) {
-                    if (this._game.sellingMode) {
-                        this._game.sendMessage(ServerMsg.PLAYER_SELL_ITEM, {
-                            index: element.i,
-                        });
-                    }
-                }
+                // Clicking a bag slot used to sell it, from wherever you were
+                // standing, because selling was a message. It is a transfer now,
+                // so it happens at the vendor's Sell tab against what the chain
+                // says you hold — which is not necessarily what is in here yet.
                 if (child.metadata.item && e.buttonIndex === 2) {
                     this._UI._Tooltip.close();
                     this._UI._InventoryDropdown.showDropdown(child, item, element);

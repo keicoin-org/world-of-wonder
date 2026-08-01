@@ -248,20 +248,11 @@ export class GameRoomState extends Schema {
             }
         }
 
-        if (type === ServerMsg.PLAYER_BUY_ITEM) {
-            const item = this.gameData.get("item", data.key);
-            if (item) {
-                playerState.buyItem(item, data.qty);
-            }
-        }
-
-        if (type === ServerMsg.PLAYER_SELL_ITEM) {
-            const index = data.index;
-            const item = playerState.getInventoryItemByIndex(index);
-            if (item) {
-                playerState.sellItem(item);
-            }
-        }
+        // PLAYER_BUY_ITEM and PLAYER_SELL_ITEM used to be handled here, and are
+        // deliberately not any more. Trading happens between the player's wallet
+        // and the shop's account, so a room message that handed over an item or
+        // credited gold would be a second, forgeable way to do the one thing this
+        // server must not be able to do (SPEC §8).
 
         /////////////////////////////////////
         // on player equip

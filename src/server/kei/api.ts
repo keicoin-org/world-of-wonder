@@ -65,27 +65,11 @@ export function mountEconomyApi(app: any, economy: Economy): void {
     }
   })
 
-  /**
-   * Sell an item back. The shop pays out here; the item itself still has to be
-   * transferred by whoever owns it, which is not this server.
-   */
-  app.post('/kei/sell', async (request: any, response: any) => {
-    const address = request.query.address
-    const key = request.query.key
-
-    if (!looksLikeAddress(address)) {
-      return response.status(400).json({ error: 'That is not a Kei address.' })
-    }
-    if (typeof key !== 'string' || key === '') {
-      return response.status(400).json({ error: 'Which item?' })
-    }
-
-    try {
-      response.json({ paid: await economy.buyBack(address, key) })
-    } catch (error) {
-      response.status(400).json({ error: (error as Error).message })
-    }
-  })
+  // Selling deliberately has no route. The shop buys by reacting to an item
+  // landing in its account, so a sale costs the seller the item before it pays
+  // them — where a "sell this" endpoint would mint gold to anyone who asked for
+  // it, having verified nothing. What the shop pays is in the catalogue, so a
+  // client can quote a price without asking for one.
 
   /**
    * A faucet, and only ever a development one.

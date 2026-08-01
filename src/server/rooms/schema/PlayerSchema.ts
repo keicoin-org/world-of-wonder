@@ -348,35 +348,10 @@ export class PlayerSchema extends Entity {
         console.log("dropItem", dropAll, newQuantity, inventoryItem.qty);
     }
 
-    buyItem(item, qty) {
-        let availableSlot = this.findNextAvailableInventorySlot();
-
-        if (!availableSlot) {
-            console.error("BUYING", item.key, "QTY: " + qty, "INVENTORY IS FULL (" + availableSlot + ")");
-            return false;
-        }
-
-        console.log("BUYING", item.key, "QTY: " + qty, "INVENTORY SLOT: " + availableSlot);
-
-        let loot = new LootSchema(this._state, {
-            key: item.key,
-            qty: qty,
-        });
-        this.pickupItem(loot);
-
-        // remove gold from player
-        this.player_data.gold = this.player_data.gold - item.value * qty;
-    }
-
-    sellItem(inventoryItem) {
-        // reduce inventory qty
-        this.reduceItemQuantity(inventoryItem, 1);
-
-        // add gold to player
-        this.player_data.gold += inventoryItem.value;
-
-        console.log("SELLING", inventoryItem.key, "QTY: 1");
-    }
+    // buyItem() and sellItem() lived here and were the whole economy: an item
+    // appeared because this method said so, and gold moved because it did the
+    // arithmetic. Both are on the chain now (src/server/kei/Economy.ts), where
+    // the player signs for their own side and this server cannot.
 
     pickupItem(loot: LootSchema) {
         // play animation // disabled

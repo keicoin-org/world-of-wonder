@@ -32,6 +32,11 @@ async function until(predicate: () => Promise<boolean>, ms = 15_000): Promise<bo
 const catalogue = await (await fetch(`${BASE}/kei/catalogue`)).json()
 check('the shop answers over HTTP', Array.isArray(catalogue.items) && catalogue.items.length > 0)
 
+// A client has to be able to price both directions without asking, because the
+// selling direction has no route to ask.
+const sword = catalogue.items.find((item: any) => item.key === 'sword_01')
+check('the shop quotes what it charges and what it pays', sword?.value === 100 && sword?.buyback === 50, JSON.stringify(sword))
+
 // A player, holding its own key, talking to the node across a URL — exactly what
 // the browser does. Nothing here shares memory with the server.
 const player = await Kei.start({ node: `${BASE}/rpc` })
@@ -69,6 +74,22 @@ if (granted.ok) {
 
   await player.sync()
   check('the player paid for it', (await gold.balance()) === 400, `${await gold.balance()}`)
+
+  // Selling it back, across the same wire. There is nothing to POST: the shop
+  // buys by paying for what lands in its account, so handing over the sword is
+  // the entire request. A browser can do this and cannot do anything cheaper.
+  const purse = await gold.balance()
+  await player.items.transfer(sword.asset, catalogue.issuer)
+
+  const wasPaid = await until(async () => {
+    await player.sync()
+    return (await gold.balance()) > purse
+  })
+  check('the shop paid for the sword it was sent', wasPaid)
+  check('and it paid what it advertised', (await gold.balance()) === purse + sword.buyback, `${await gold.balance()}`)
+
+  const sold = await (await fetch(`${BASE}/kei/wallet/${player.address}`)).json()
+  check('the sword is no longer the player\'s', (sold.inventory?.sword_01 ?? 0) === 0, `${sold.inventory?.sword_01 ?? 0}`)
 } else {
   console.log('  ..    /kei/grant is not exposed; skipping the funded half')
 }

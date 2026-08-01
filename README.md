@@ -32,7 +32,8 @@ promise about your intentions, not a fact about the world.
 | Gold | `PlayerSchema.gold`, saved to SQLite | A Kei token. `balanceOf` is the only source of truth. |
 | Inventory | `character_inventory` rows | One 0-decimal asset per item archetype; owning a sword is holding a unit of it. |
 | Buying | Server decrements gold, adds a row | Player signs a transfer; the issuer mints **after** the chain confirms it |
-| Selling | Server increments gold | The shop mints the payment; the item moves only if its owner moves it |
+| Selling | Server increments gold | Player signs the item away; the shop pays for what arrived |
+| The vendor panel | Sends a room message | Signs with the player's wallet, and reads the purse off the chain |
 
 The database is still there, and deliberately: it holds accounts, characters, and
 where they were standing. Colyseus is still authoritative over presence and
@@ -50,6 +51,23 @@ it — and delivers nothing until the chain says the gold landed.
 code to that: an unpaid order delivers nothing, and a player who cannot afford
 something is refused in a sentence they can act on.
 
+### The wallet is the browser's
+
+`Kei.start()` generates the player's seed on first run and keeps it in
+localStorage, so there is no signup and no account to create — and clearing site
+data loses the wallet, which is the other half of owning it. The game never holds
+that key. That is why the vendor panel signs its own payments and reads the purse
+off the chain instead of trusting a number the room sent it.
+
+### Selling takes one, and there is no route for it
+
+A sale is the player transferring the item to the shop, and the shop paying for
+what arrived. There is deliberately no `POST /kei/sell`: the server can mint this
+world's currency, so any endpoint that paid on request would be a printing press
+for whoever found it. Reacting to an arrival costs the seller the item first,
+which is the only version of this that a stranger cannot exploit. What the shop
+pays is in the catalogue, so a client can still quote a price without asking.
+
 ## Where things are
 
 ```
@@ -58,6 +76,8 @@ src/server/kei/api.ts           the HTTP surface. Nothing here can move a player
 src/server/kei/node.ts          which chain, and which account issues the money
 src/server/kei/Economy.test.ts  the rules, against a chain in-process
 src/server/kei/endtoend.test.ts the same thing across a URL, the way a browser does it
+src/client/Controllers/Wallet.ts  the player's key, and the only thing that spends their gold
+src/client/Controllers/UI/Panels/Dialog/VendorDialog.ts  the shop, as a player sees it
 src/client/Utils/index.ts       where the client looks for the server
 ```
 
@@ -101,9 +121,16 @@ working directory, so start it from the project root:
 - **The auction house.** SPEC §10.3 specifies it on `@keicoin/market`, which is
   M5 and does not exist. Building a database-backed one in the meantime would
   contradict everything above, so there is nothing rather than a lie.
-- **The vendor UI still reads upstream's inventory.** The chain is authoritative
-  on the server and over HTTP; the Babylon panels have not been rewritten to
-  read from it yet.
+- **The bag still shows upstream's inventory.** The vendor is wholly on the chain
+  now — the purse it counts, the wares it sells, and what it will buy back all
+  come from there — but the inventory panel, equipping, loot and quest rewards
+  are still the database's. So a sword bought from a vendor is yours on the chain
+  and will not appear in the bag, and the gold in the bag's corner is not the
+  gold the vendor counts. The vendor shows its own numbers rather than papering
+  over the difference. Moving the bag across is the next slice, and the awkward
+  half-state until then is the honest way round: the chain is right and the panel
+  is behind, not the reverse.
+- **The trainer still spends `player_data.gold`**, which is no longer money.
 - **`construction/`** — 757MB of `.blend` and `.afdesign` art *source*, against
   28MB for the whole runtime game. Get it from
   [upstream](https://github.com/orion3dgames/t5c) if you need to edit the models.

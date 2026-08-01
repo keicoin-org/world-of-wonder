@@ -9,6 +9,7 @@ import { Room } from "colyseus.js";
 import { Config } from "../../shared/Config";
 import { ServerMsg } from "../../shared/types";
 import { GameScene } from "../Screens/GameScene";
+import { Wallet } from "./Wallet";
 
 export class GameController {
     // core
@@ -48,8 +49,12 @@ export class GameController {
     public instances = new Map();
     public materials = new Map();
 
-    //
-    public sellingMode: boolean = false;
+    /**
+     * The player's money, which is theirs rather than ours. Undefined when the
+     * chain could not be reached — the rest of the game still works without it,
+     * so nothing here may assume it exists.
+     */
+    public wallet: Wallet;
 
     // all game data
     private _gameData = {
@@ -100,6 +105,22 @@ export class GameController {
         });
         this._gameData = result.data.data;
         console.log("[GAME] loaded game data", this._gameData);
+    }
+
+    /**
+     * Open the player's wallet, or carry on without one.
+     *
+     * A chain the browser cannot reach must not be the reason a player cannot
+     * move or fight, so this never throws: the vendor is the only thing that
+     * needs money, and it can say so itself.
+     */
+    async initializeWallet() {
+        try {
+            this.wallet = await Wallet.open(this.config.port);
+            console.log("[GAME] wallet open", this.wallet.address);
+        } catch (error) {
+            console.error("[GAME] no wallet — the chain could not be reached", error);
+        }
     }
 
     public getGameData(type, key) {

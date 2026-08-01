@@ -193,11 +193,6 @@ export class Panel {
     // close panel
     public close() {
         this._panel.isVisible = false;
-
-        if (this.vendor) {
-            this.vendor.sellingModeOff();
-        }
-
         this._game.gamescene._sound.play("SOUND_dialog_close");
     }
 

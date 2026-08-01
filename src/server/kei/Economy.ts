@@ -47,6 +47,9 @@ const ITEM_SUPPLY = 100_000
 /** An order nobody paid for is forgotten after this long. */
 const ORDER_TTL_MS = 120_000
 
+/** The oldest shopkeeper's margin there is: you sell back for half of list. */
+export const buybackPrice = (value: number): number => Math.floor(value / 2)
+
 export interface EconomyOptions {
   seed: string
   node: KeiNode | string
@@ -62,7 +65,15 @@ export interface CataloguePayload {
   network: string
   coin: { asset: string; symbol: string; decimals: number }
   exchange: { open: boolean; goldPerKei: number; minimum: number }
-  items: Array<{ key: string; title: string; value: number; asset: string; sellable: boolean }>
+  items: Array<{
+    key: string
+    title: string
+    value: number
+    /** What the shop pays to take one back. Zero when it will not buy it at all. */
+    buyback: number
+    asset: string
+    sellable: boolean
+  }>
 }
 
 export interface Economy {
@@ -73,8 +84,11 @@ export interface Economy {
   /** What the chain says a player holds. Not a cache — the chain is asked. */
   goldOf(address: string): Promise<number>
   inventoryOf(address: string): Promise<Record<string, number>>
-  /** Buy an item back. The player signs the item transfer; this pays for it. */
-  buyBack(seller: string, key: string): Promise<number>
+  // Selling has no method here on purpose. A sale is the player transferring the
+  // item to this address, and the shop paying for what arrived — so the only way
+  // to trigger one is to actually part with the item. An endpoint that paid on
+  // request would be a mint on request, which is a printing press with a nicer
+  // name.
   /** Starting gold for a character that has never played. */
   grant(address: string, amount: number): Promise<void>
   close(): void
@@ -119,6 +133,8 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
   // claim.
   const items = new Map<string, Item>()
   const itemTokens = new Map<string, IssuerToken>()
+  /** Which archetype an asset is, for reading an arrival the other way round. */
+  const itemKeys = new Map<string, string>()
   for (const key of keys) {
     const data = ItemsDB[key] as ItemData
     const item = await kei.items.create({
@@ -130,6 +146,7 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
     })
     items.set(key, item)
     itemTokens.set(key, await kei.items.token(item.id))
+    itemKeys.set(item.id, key)
   }
 
   const exchange = options.exchange !== false
@@ -140,24 +157,51 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
   const orders = new Map<string, Order>()
 
   /**
-   * Settlement. A transfer carries no memo (decisions-m0 §4), so intent is
-   * recorded by `order()` and matched to the arrival here. The order is not the
-   * purchase: nothing is delivered until the chain says the gold landed.
+   * Settlement, both ways round. Everything the shop does is a reaction to
+   * something arriving, because an arrival is the one thing a player cannot
+   * fake and the server cannot fake on their behalf.
+   *
+   * Gold arriving is a purchase. A transfer carries no memo (decisions-m0 §4),
+   * so what it was for is recorded by `order()` and matched here — the order is
+   * not the purchase, and nothing is delivered until the gold has landed.
+   *
+   * An item arriving is a sale, and needs no order at all: the asset says which
+   * item it is, and its being here says whose it was.
    */
   const stopSettling = kei.on('asset-received', (arrival) => {
-    if (arrival.asset !== gold.id) return
-    const order = orders.get(arrival.from)
-    if (!order || arrival.amount < order.price) return
-    orders.delete(arrival.from)
+    if (arrival.asset === gold.id) {
+      const order = orders.get(arrival.from)
+      if (!order || arrival.amount < order.price) return
+      orders.delete(arrival.from)
+
+      void (async () => {
+        const token = itemTokens.get(order.key)
+        if (!token) return
+        await token.mint(arrival.from, order.qty)
+        // The shop is a sink: gold spent here stops existing, which frees the
+        // headroom it took under the cap (SPEC §5.6.6).
+        await gold.burn(order.price)
+        options.onDelivered?.({ to: arrival.from, key: order.key, qty: order.qty })
+      })()
+      return
+    }
+
+    const key = itemKeys.get(arrival.asset)
+    if (key === undefined) return
 
     void (async () => {
-      const token = itemTokens.get(order.key)
-      if (!token) return
-      await token.mint(arrival.from, order.qty)
-      // The shop is a sink: gold spent here stops existing, which frees the
-      // headroom it took under the cap (SPEC §5.6.6).
-      await gold.burn(order.price)
-      options.onDelivered?.({ to: arrival.from, key: order.key, qty: order.qty })
+      const data = ItemsDB[key] as ItemData
+      const qty = Math.floor(arrival.amount)
+      if (qty < 1) return
+
+      // Refusing to buy something cannot mean keeping it. The shop has no claim
+      // on an item it would not pay for, so it goes straight back.
+      if (!data.sellable) {
+        await itemTokens.get(key)!.transfer(arrival.from, qty)
+        return
+      }
+
+      await gold.mint(arrival.from, buybackPrice(data.value ?? 0) * qty)
     })()
   })
 
@@ -172,12 +216,14 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
         exchange: { open: exchange, goldPerKei: GOLD_PER_KEI, minimum: MINIMUM_TOP_UP },
         items: keys.map((key) => {
           const data = ItemsDB[key] as ItemData
+          const sellable = data.sellable ?? false
           return {
             key,
             title: data.title ?? key,
             value: data.value ?? 0,
+            buyback: sellable ? buybackPrice(data.value ?? 0) : 0,
             asset: items.get(key)!.id,
-            sellable: data.sellable ?? false,
+            sellable,
           }
         }),
       }
@@ -213,17 +259,6 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
         if (holding) counts[key] = Number(holding.balance)
       }
       return counts
-    },
-
-    async buyBack(seller, key) {
-      const data = ItemsDB[key] as ItemData | undefined
-      if (!data) throw new Error(`The shop does not buy "${key}".`)
-      if (!data.sellable) throw new Error(`${data.title ?? key} cannot be sold.`)
-
-      // Half of list, the oldest shopkeeper's margin there is.
-      const paid = Math.floor((data.value ?? 0) / 2)
-      await gold.mint(seller, paid)
-      return paid
     },
 
     async grant(address, amount) {

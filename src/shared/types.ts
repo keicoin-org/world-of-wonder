@@ -82,6 +82,9 @@ export enum ServerMsg {
     PLAYER_CASTING_CANCEL,
     PLAYER_TELEPORT,
     PLAYER_QUEST_UPDATE,
+    // Nothing sends these two any more: trading is signed by the player's wallet
+    // rather than asked for over the room. They are kept because this enum is a
+    // wire format and its numbering is the protocol.
     PLAYER_BUY_ITEM,
     PLAYER_SELL_ITEM,
     DEBUG_REMOVE_ENTITIES,

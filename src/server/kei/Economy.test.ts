@@ -88,11 +88,26 @@ try {
 }
 check('being too poor is an error that says so', refused.includes('gold and you have'), refused)
 
-// The server cannot spend a player's gold: there is no call for it, and the
-// player's key never leaves the browser. The nearest thing is a buy-back, which
-// only ever pays out — and the item still has to be transferred by its owner.
-const paid = await economy.buyBack(player.address, 'sword_01')
-check('a buy-back pays half of list', paid === Math.floor(sword.value / 2), `${paid}`)
+// Selling is the same trade backwards, and it is worth being precise about why
+// it looks like this. The server can mint its own currency, so any call that
+// paid a player on request would be a printing press — the only safe trigger is
+// something the player cannot fake and the shop cannot fake for them. So there
+// is no sell call at all: the player parts with the item, and the shop pays for
+// what arrived.
+const purse = await gold.balance()
+check('the shop quotes what it pays', sword.buyback === Math.floor(sword.value / 2), `${sword.buyback}`)
+
+await player.items.transfer(sword.asset, economy.address)
+
+const settled = await until(async () => {
+  await player.sync()
+  return (await gold.balance()) > purse
+})
+check('the shop paid for the sword it was sent', settled)
+check('a sale pays the quoted price', (await gold.balance()) === purse + sword.buyback, `${await gold.balance()}`)
+
+const afterSale = await economy.inventoryOf(player.address)
+check('and the sword is no longer the player\'s', (afterSale['sword_01'] ?? 0) === 0, `${afterSale['sword_01'] ?? 0}`)
 
 economy.close()
 console.log(failures === 0 ? '\nall good\n' : `\n${failures} failed\n`)

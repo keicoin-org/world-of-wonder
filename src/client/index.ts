@@ -76,6 +76,7 @@ class App {
         // preload game data
         this.game = new GameController(this);
         await this.game.initializeGameData();
+        await this.game.initializeWallet();
 
         // set default scene
         let defaultScene = isLocal() ? State.GAME : State.LOGIN;
