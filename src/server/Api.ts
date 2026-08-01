@@ -4,7 +4,7 @@ import Logger from "./utils/Logger";
 import { generateRandomPlayerName } from "../shared/Utils";
 import { GameData } from "./GameData";
 import { Database } from "./Database";
-import { generateId } from "colyseus";
+import { generateId } from "@colyseus/core";
 
 class Api {
     constructor(app, database: Database) {

@@ -11,10 +11,13 @@ fork replaces is the economy.
 
 ```sh
 npm install
-npm run link-sdk       # once — links ../kei-transaction (SPEC §10.5)
 npm run server-build && npm run server-start   # http://localhost:3000
 npm run client-dev                              # http://localhost:8080
 ```
+
+The released `kei-transaction` SDK is a normal npm dependency. A clean clone
+does not need a sibling checkout or a link step; CI installs exactly the locked
+dependency tree with `npm ci`.
 
 > **Status.** The chain underneath is an in-memory mock served at `/rpc` by the
 > game server. It dies when you stop the process and nothing here is worth
@@ -72,6 +75,22 @@ npm run test:e2e        # the same thing over HTTP, sharing no memory with the s
 `test:e2e` is the one worth trusting. It signs its own transfers against `/rpc`
 and waits for the item to arrive, so passing it means a hosted client can work
 rather than suggesting it might.
+
+## Dependency security
+
+CI rejects high and critical production advisories. `npm audit --omit=dev`
+currently reports one moderate advisory chain: `@colyseus/ws-transport` →
+`@colyseus/core@0.15.57` → `nanoid@2.1.11`
+([GHSA-mwcw-c2x4-8c55](https://github.com/advisories/GHSA-mwcw-c2x4-8c55)).
+The advisory concerns predictable output when Nano ID is passed a non-integer
+length. This application and Colyseus call `generateId()` without an argument,
+which uses the integer default `9`, so the affected input is not reachable here.
+
+Nano ID 3 removes the advisory but changes its CommonJS export and makes
+Colyseus 0.15 fail at startup. npm's suggested fix is the breaking Colyseus
+0.17 line. The remaining moderate is therefore documented until a tested
+Colyseus migration can replace the legacy networking stack; rerun the audit
+whenever dependencies or the lockfile change.
 
 ## Hosting it
 

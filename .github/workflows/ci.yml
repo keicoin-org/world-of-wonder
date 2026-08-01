@@ -1,0 +1,95 @@
+name: CI
+
+# What a fresh clone has to be able to do: install from the lockfile alone,
+# build both halves, and pass the economy rules in-process and over HTTP.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build & test (node ${{ matrix.node }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The floor from package.json engines, the version the esbuild target
+          # is set to, and a Windows box because sqlite3 ships per-platform
+          # prebuilds and that is where they most often are not there.
+          - { os: ubuntu-latest, node: "20" }
+          - { os: ubuntu-latest, node: "22" }
+          - { os: windows-latest, node: "22" }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # `ci`, not `install`: it fails rather than quietly rewriting the lockfile,
+      # which is the whole question this job is asking.
+      - run: npm ci
+
+      - name: economy rules, in-process
+        run: npm test
+
+      - run: npm run typecheck
+
+      - run: npm run server-build
+
+      - run: npm run client-build
+
+      # The same rules across a URL, against a server that shares no memory with
+      # the test. No KEI_NODE, so it runs on the mock chain served at /rpc.
+      - name: economy rules, over HTTP
+        shell: bash
+        run: |
+          npm run server-start > server.log 2>&1 &
+          server=$!
+          for _ in $(seq 1 60); do
+            if curl -fsS -o /dev/null http://localhost:3000/; then break; fi
+            sleep 1
+          done
+          status=0
+          npm run test:e2e || status=$?
+          kill "$server" 2>/dev/null || true
+          if [ "$status" -ne 0 ]; then
+            echo "--- server log ---"
+            cat server.log
+          fi
+          exit "$status"
+
+  audit:
+    name: audit (production dependencies)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      # The gate. Everything high and critical is out of the production tree and
+      # has to stay out.
+      - name: no high or critical advisories in production
+        run: npm audit --omit=dev --audit-level=high
+
+      # Keep the complete report visible even if a future low/moderate advisory
+      # appears below the blocking threshold.
+      - name: full report
+        if: always()
+        run: npm audit --omit=dev || true
