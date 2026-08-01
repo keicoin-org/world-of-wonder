@@ -9,9 +9,12 @@ real Babylon.js + Colyseus RPG with movement, combat, quests, loot, a navmesh, a
 vendor, and a UI. All of that is upstream's work and still upstream's. What this
 fork replaces is the economy.
 
+Node 20.17 or newer.
+
 ```sh
-npm install
-npm run server-build && npm run server-start   # http://localhost:3000
+npm ci
+cp .env.example .env                            # optional — everything has a default
+npm run server-build && npm run server-start    # http://localhost:3000
 npm run client-dev                              # http://localhost:8080
 ```
 
@@ -86,11 +89,42 @@ The advisory concerns predictable output when Nano ID is passed a non-integer
 length. This application and Colyseus call `generateId()` without an argument,
 which uses the integer default `9`, so the affected input is not reachable here.
 
-Nano ID 3 removes the advisory but changes its CommonJS export and makes
-Colyseus 0.15 fail at startup. npm's suggested fix is the breaking Colyseus
-0.17 line. The remaining moderate is therefore documented until a tested
-Colyseus migration can replace the legacy networking stack; rerun the audit
-whenever dependencies or the lockfile change.
+The advisory is confined to that one nested copy. This project's own `nanoid`
+import is a direct dependency held at `^3.3.8` — the first patched release — so
+the code in `src/` resolves to 3.3.16 and is out of range regardless of what
+Colyseus carries underneath it.
+
+Nano ID 3 removes the advisory and cannot be forced into place. Its CommonJS
+export is an object of named functions where 2.x exported the function itself,
+and `@colyseus/core` calls it as one — with `overrides` pointing that dependency
+at `^3.3.8`, `generateId()` throws
+`TypeError: (0 , import_nanoid.default) is not a function`. `MatchMaker` calls
+it while assigning `processId`, so the server dies on `listen()` rather than
+somewhere quiet. Widening that to a top-level `"nanoid"` override does not even
+get as far as running: npm refuses it with `EOVERRIDE — Override for
+nanoid@^3.0.0 conflicts with direct dependency`. npm's own suggested fix is the
+breaking Colyseus 0.17 line, which wants `@colyseus/schema@^4` against the
+`^2.0.37` the eleven files that declare `@type()` fields are written for, plus
+`colyseus.js` on the client moving in lockstep with the wire format.
+
+The remaining moderate is therefore documented rather than papered over, until a
+tested Colyseus migration can replace the 0.15 networking stack. Rerun
+`npm audit --omit=dev` whenever the dependencies or the lockfile change.
+
+Everything else the audit used to report is gone rather than suppressed:
+
+| | |
+|---|---|
+| `sqlite3` 5 → 6 | Drops `node-gyp`, and with it `tar`, `cacache`, `make-fetch-happen`, `http-proxy-agent`, and `@tootallnate/once` — one critical and five more advisories, none of them in code that ever ran. |
+| `express` → 4.22.2 | `path-to-regexp`, `body-parser`, and `qs`. |
+| dropped the `colyseus` umbrella | The two things imported from it, `generateId` and `Client`, are `@colyseus/core`'s own exports. The umbrella also pulled in `@colyseus/auth` → `grant` → `jwk-to-pem`/`request-oauth`, along with both Redis drivers, none of which this server mounts. |
+| dropped `@bananocoin/bananojs` and `fs-extra` | The first now arrives through the SDK at one version instead of two; the second was imported nowhere. |
+| `ws` | Resolves to 7.5.13 and 8.21.1, both patched, once the tree above is settled. |
+
+Two development-only advisories are handled the same way: `copy-webpack-plugin`
+moves to 14 for a fixed `serialize-javascript`, and `webpack-dev-server`'s
+`sockjs` gets an `overrides` bump to `uuid@11`, which it uses only as
+`require('uuid').v4()`.
 
 ## Hosting it
 
@@ -113,7 +147,18 @@ working directory, so start it from the project root:
 | `KEI_GAME_SEED` | 64 hex characters. **This is the economy** — whoever holds it can mint this world's currency without limit. Without one a seed is generated per run, so every asset id changes on restart. |
 | `KEI_NODE` | A node URL. Unset means an in-process mock served at `/rpc`, which dies with the process. |
 | `KEI_EXCHANGE` | `off` disables paying Kei for gold. SPEC §8 requires the game to be playable with payments off. |
-| `NODE_ENV` | `production` closes `/kei/grant` and never loads the Colyseus monitor. |
+| `NODE_ENV` | `production` closes `/kei/grant`, never loads the Colyseus monitor, and turns off the latency simulation. |
+| `DATABASE_PATH` | Where sqlite keeps accounts and characters. Defaults to `./database.db`. |
+| `DATABASE_HOST` `DATABASE_DB` `DATABASE_USER` `DATABASE_PASSWORD` | mysql, read only when `database` in `src/shared/Config.ts` is `"mysql"`. |
+| `GAME_SERVER` | Build-time, not runtime — see above. |
+| `KEI_TEST_BASE` | What `test:e2e` points at. Defaults to `http://localhost:3000`. |
+
+Both halves read `.env`, and a variable already in the environment beats a line
+in it. [`.env.example`](.env.example) is the full list with the reasoning; it
+holds no secrets and is safe to commit.
+
+The listen port is `port` in `src/shared/Config.ts`, not an environment
+variable. A host that assigns you a port expects that file to be edited.
 
 ## What is not here yet
 
