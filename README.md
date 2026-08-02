@@ -32,11 +32,13 @@ The released `kei-transaction` SDK is a normal npm dependency. A clean clone
 does not need a sibling checkout or a link step; CI installs exactly the locked
 dependency tree with `npm ci`.
 
-> **Status.** By default the chain underneath is an in-memory mock served at
-> `/rpc` by the game server. It dies when you stop the process and nothing here
-> is worth anything. Set `KEI_NODE` to point at a real one — M3's public
-> best-effort testnet is `https://testnet.keicoin.org/rpc` — and nothing above
-> that line changes. Testnet Kei has no value either, and the chain may reset.
+> **Status.** By default this settles on the public M3 testnet
+> (`https://testnet.keicoin.org/rpc`) — a real network, best-effort, with weak
+> consensus, no uptime promise, and Kei that is worth nothing. That default is
+> deliberate: a player's wallet is meant to outlive your server, and it cannot do
+> that against a chain living inside it. `KEI_NETWORK=mock` gives you the
+> in-process chain instead, which is right offline. Mainnet is not open yet
+> (SPEC §15).
 
 ## What changed from upstream
 
@@ -188,7 +190,8 @@ working directory, so start it from the project root:
 | Variable | |
 |---|---|
 | `KEI_GAME_SEED` | 64 hex characters. **This is the economy** — whoever holds it can mint this world's currency without limit. Without one a seed is generated per run, so every asset id changes on restart. |
-| `KEI_NODE` | A node URL. Unset means an in-process mock served at `/rpc`, which dies with the process. |
+| `KEI_NETWORK` | `testnet` (default), `mainnet`, or `mock`. Mainnet is not open and has no faucet, so it stops with an explanation rather than settling elsewhere. |
+| `KEI_NODE` | A node URL, overriding the public one for `KEI_NETWORK`. Unset is the normal case. |
 | `KEI_EXCHANGE` | `off` disables paying Kei for gold. SPEC §8 requires the game to be playable with payments off. |
 | `NODE_ENV` | `production` closes `/kei/grant`, never loads the Colyseus monitor, and turns off the latency simulation. |
 | `DATABASE_PATH` | Where sqlite keeps accounts and characters. Defaults to `./database.db`. |

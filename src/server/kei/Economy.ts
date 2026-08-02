@@ -52,7 +52,8 @@ export const buybackPrice = (value: number): number => Math.floor(value / 2)
 
 export interface EconomyOptions {
   seed: string
-  node: KeiNode | string
+  /** Undefined leaves the SDK to pick the public node for `network`. */
+  node?: KeiNode | string
   network?: 'mock' | 'testnet' | 'mainnet'
   /** SPEC §8: the game must be playable with payments switched off. */
   exchange?: boolean
@@ -104,16 +105,26 @@ interface Order {
 export async function startEconomy(options: EconomyOptions): Promise<Economy> {
   const kei = await Kei.server({
     seed: options.seed,
-    node: options.node,
+    ...(options.node === undefined ? {} : { node: options.node }),
     ...(options.network === undefined ? {} : { network: options.network }),
   })
 
   // Issuance burns an escalating amount of Kei per asset (SPEC §5.6.5), and this
-  // world issues one currency plus one asset per item archetype. On a real
-  // network somebody funds this address once; on a mock the faucet does.
+  // world issues one currency plus one asset per item archetype. On testnet and
+  // on a mock the faucet covers it; on mainnet there is no faucet, so a person
+  // funds this address once and the shortfall has to be said out loud rather
+  // than discovered as a failed issuance halfway through the list.
   const keys = Object.keys(ItemsDB)
   const needed = (keys.length + 1) * 1_000 + 100
-  if ((await kei.balance()) < needed) await kei.faucet(needed)
+  const balance = await kei.balance()
+  if (balance < needed) {
+    if (options.network === 'mainnet') {
+      throw new Error(
+        `This world needs about ${needed} Kei to issue its currency and ${keys.length} item types, and ${kei.address} holds ${balance}. There is no faucet on mainnet — send the difference to that address and start the server again.`,
+      )
+    }
+    await kei.faucet(needed)
+  }
 
   const gold = await kei.token.issue({
     name: COIN.name,
