@@ -7,7 +7,6 @@
     "description": "A multiplayer 3d top down rpg whose currency and items live on a chain. Forked from orion3dgames/t5c.",
     "main": "./dist/client/index.html",
     "scripts": {
-        "link-sdk": "node scripts/link-sdk.mjs",
         "client-dev": "webpack serve --open --config webpack.dev.js",
         "client-start": "webpack serve --open --config webpack.dev.js",
         "client-build": "webpack --config webpack.prod.js",
@@ -15,27 +14,25 @@
         "server-dev": "node scripts/build-server.mjs --watch",
         "server-start": "node dist/server/index.mjs",
         "server-build": "node scripts/build-server.mjs",
+        "typecheck": "tsc --noEmit",
         "test:economy": "node scripts/build-server.mjs --entry src/server/kei/Economy.test.ts --out dist/test/economy.mjs && node dist/test/economy.mjs",
         "test": "npm run test:economy",
-        "loadtest": "npx tsx loadtest/test.ts --room game_room --numClients 10 --endpoint ws://localhost:3000",
         "test:e2e": "node scripts/build-server.mjs --entry src/server/kei/endtoend.test.ts --out dist/test/e2e.mjs && node dist/test/e2e.mjs"
     },
     "author": "Orion3d, Kei",
     "license": "MIT",
+    "engines": {
+        "node": ">=20.17.0"
+    },
     "devDependencies": {
         "@babylonjs/gui-editor": "8.28.3",
         "@babylonjs/inspector": "8.28.3",
         "@babylonjs/materials": "8.28.3",
-        "@colyseus/core": "^0.15.57",
-        "@colyseus/loadtest": "^0.15.7",
         "@colyseus/monitor": "^0.15.8",
-        "@colyseus/schema": "^2.0.37",
-        "@colyseus/ws-transport": "^0.15.3",
         "@types/node": "^20.12.12",
         "@types/react": "^18.3.2",
         "@types/react-dom": "^18.3.0",
-        "axios": "^1.12.2",
-        "copy-webpack-plugin": "^12.0.2",
+        "copy-webpack-plugin": "^14.0.0",
         "esbuild": "^0.28.1",
         "ts-loader": "^9.5.1",
         "ts-node": "^10.9.2",
@@ -52,19 +49,25 @@
         "@babylonjs/gui": "8.28.3",
         "@babylonjs/loaders": "8.28.3",
         "@babylonjs/serializers": "8.28.3",
-        "@bananocoin/bananojs": "^2.10.10",
+        "@colyseus/core": "^0.15.57",
+        "@colyseus/schema": "^2.0.37",
+        "@colyseus/ws-transport": "^0.15.3",
+        "axios": "^1.12.2",
         "babylonjs-gltf2interface": "8.28.3",
-        "colyseus": "^0.15.57",
         "colyseus.js": "^0.15.28",
         "cors": "^2.8.5",
         "dotenv": "^16.4.5",
-        "dotenv-webpack": "^8.1.0",
-        "express": "^4.19.2",
-        "fs-extra": "^11.2.0",
+        "express": "^4.22.2",
+        "kei-transaction": "^0.2.0",
         "mysql2": "^3.10.2",
-        "nanoid": "^3.0.0",
-        "sqlite3": "^5.1.7",
+        "nanoid": "^3.3.8",
+        "sqlite3": "^6.0.1",
         "winston": "^3.13.0"
+    },
+    "overrides": {
+        "sockjs": {
+            "uuid": "^11.1.1"
+        }
     },
     "browserslist": {
         "production": [

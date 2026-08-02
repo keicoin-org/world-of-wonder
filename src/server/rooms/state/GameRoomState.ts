@@ -1,4 +1,4 @@
-import { Client } from "colyseus";
+import { Client } from "@colyseus/core";
 import { Schema, type, MapSchema, filterChildren } from "@colyseus/schema";
 import { BrainSchema, Entity, EquipmentSchema, LootSchema, PlayerSchema } from "../schema";
 
