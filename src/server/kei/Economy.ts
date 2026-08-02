@@ -123,7 +123,20 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
         `This world needs about ${needed} Kei to issue its currency and ${keys.length} item types, and ${kei.address} holds ${balance}. There is no faucet on mainnet — send the difference to that address and start the server again.`,
       )
     }
-    await kei.faucet(needed)
+    try {
+      await kei.faucet(needed)
+    } catch (cause) {
+      // The public testnet is rate-limited and makes no uptime promise, so this
+      // is a thing that happens rather than a thing that has gone wrong. Say
+      // which address needs funding and how else to start, instead of letting a
+      // node-error stack be somebody's first minute with the template.
+      throw new Error(
+        `Could not draw ${needed} Kei from the ${options.network ?? 'testnet'} faucet for ${kei.address}: ${
+          (cause as Error).message
+        }\n` +
+          'The public testnet is best-effort and rate-limited. Wait and start again, send Kei to that address yourself, or run KEI_NETWORK=mock to develop against a chain in this process.',
+      )
+    }
   }
 
   const gold = await kei.token.issue({
