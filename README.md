@@ -1,8 +1,18 @@
-# kei-mmo-template
+# world-of-wonder
 
 A multiplayer 3D top-down RPG whose **gold and items live on a chain instead of
 in the game's database**. Fork it, rename it, and you have an MMO where a
 player's sword is theirs rather than a row you could delete.
+
+This is the `world-of-wonder` template behind `create-kei-game`, so the usual way
+in is to let the scaffolder copy it and rename it for you:
+
+```sh
+npm create kei-game my-mmo -- --template world-of-wonder
+```
+
+Cloning this repository directly gets you the same files under the name
+`world-of-wonder`. Everything below applies either way.
 
 It is a fork of [`orion3dgames/t5c`](https://github.com/orion3dgames/t5c) — a
 real Babylon.js + Colyseus RPG with movement, combat, quests, loot, a navmesh, a
