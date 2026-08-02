@@ -7,36 +7,32 @@ import { Item } from "../../../../shared/types";
 import { Rarity } from "../../../../shared/Class/Rarity";
 import { Panel } from "./Panel";
 
+/**
+ * The bag, and what the chain says is in it.
+ *
+ * Upstream's inventory was `player_data.inventory`, a Colyseus schema the
+ * server owned. What is drawn here now is `wallet.inventory` instead — a
+ * balance read off the chain, the same one the vendor panel reads. Loot and
+ * quest rewards are still the database's (SPEC gap, see README), so this
+ * panel shows what was bought or sold on-chain and nothing else; it does not
+ * merge the two, because papering over which one is authoritative is the
+ * thing this fork exists to not do.
+ */
 export class Panel_Inventory extends Panel {
     // inventory tab
     private panel: Rectangle;
     private _inventoryGrid: Rectangle[] = [];
     private _goldUI: TextBlock;
+    private _statusUI: TextBlock;
     private bgColor: string = "rgba(255,255,255,.1)";
 
     public sceneRendered = false;
 
+    /** Set while a refresh is in flight, so two do not race each other. */
+    private _refreshing = false;
+
     constructor(_UI, _currentPlayer, options) {
         super(_UI, _currentPlayer, options);
-
-        // dynamic events
-        let entity = this._currentPlayer.entity;
-        if (entity) {
-            entity.player_data.inventory.onAdd((item, sessionId) => {
-                this.refresh();
-                // todo: could be a performance issue here?
-                // orion to keep an eye on this one
-                item.onChange((item, sessionId) => {
-                    this.refresh();
-                });
-                item.onRemove((item, sessionId) => {
-                    this.refresh();
-                });
-            });
-            entity.player_data.listen("gold", (currentValue, previousValue) => {
-                this.updateGold();
-            });
-        }
 
         // some ui must be constantly refreshed as things change
         this._scene.registerAfterRender(() => {
@@ -50,10 +46,14 @@ export class Panel_Inventory extends Panel {
         });
     }
 
+    private get wallet() {
+        return this._game.wallet;
+    }
+
     // open panel
     public open() {
         super.open();
-        this.refresh();
+        void this.refresh();
     }
 
     public close() {
@@ -91,6 +91,23 @@ export class Panel_Inventory extends Panel {
         goldTitle.textVerticalAlignment = Control.VERTICAL_ALIGNMENT_BOTTOM;
         panel.addControl(goldTitle);
         this._goldUI = goldTitle;
+
+        // A purchase or a sale is a round trip through a ledger, not a message,
+        // so there is somewhere to say the chain has not answered yet.
+        var statusText = new TextBlock("inventoryStatus");
+        statusText.text = "";
+        statusText.color = "orange";
+        statusText.fontSize = "12px";
+        statusText.top = "-5px";
+        statusText.left = "0px";
+        statusText.width = 1;
+        statusText.height = "16px";
+        statusText.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT;
+        statusText.verticalAlignment = Control.VERTICAL_ALIGNMENT_BOTTOM;
+        statusText.textHorizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT;
+        statusText.textVerticalAlignment = Control.VERTICAL_ALIGNMENT_BOTTOM;
+        panel.addControl(statusText);
+        this._statusUI = statusText;
 
         ///////////////////////////////////////////////////////
 
@@ -155,20 +172,56 @@ export class Panel_Inventory extends Panel {
         }
 
         //
-        this.refresh();
+        void this.refresh();
     }
 
     updateGold() {
         if (this._goldUI) {
-            this._goldUI.text = "Gold: " + this._currentPlayer.player_data.gold;
+            this._goldUI.text = "Gold: " + (this.wallet ? this.wallet.gold : 0);
+        }
+    }
+
+    private say(message: string) {
+        if (this._statusUI) {
+            this._statusUI.text = message;
         }
     }
 
     ///////////////////////////////////////
     ///////////////////////////////////////
     // INVENTORY PANEL
-    public refresh() {
-        // if inventory is empty, make sure to clear all unessacary UI elements
+
+    /** Ask the chain what we hold, then draw the bag around the answer. */
+    public async refresh() {
+        if (this._inventoryGrid.length < 1) {
+            return false;
+        }
+
+        if (!this.wallet) {
+            this.say("No wallet — the chain could not be reached.");
+            this.drawGrid({});
+            return;
+        }
+
+        if (this._refreshing) {
+            return;
+        }
+        this._refreshing = true;
+        this.say("Checking the chain...");
+        try {
+            await this.wallet.refresh();
+            this.say("");
+        } catch (error) {
+            this.say("The chain did not answer, so this bag may be stale.");
+        } finally {
+            this._refreshing = false;
+        }
+
+        this.drawGrid(this.wallet.inventory);
+    }
+
+    /** Clear every slot, then fill as many as the chain says we hold one of. */
+    private drawGrid(inventory: { [key: string]: number }) {
         this._inventoryGrid.forEach((child) => {
             child.getDescendants().forEach((el) => {
                 el.dispose();
@@ -179,44 +232,35 @@ export class Panel_Inventory extends Panel {
             this._UI._Tooltip.close();
         });
 
-        // if inventory is empty, do not do anything
-        if (this._inventoryGrid.length < 1) {
-            return false;
-        }
+        const held = Object.keys(inventory)
+            .filter((key) => inventory[key] > 0)
+            .sort();
 
-        // show items
-        this._currentPlayer.player_data.inventory.forEach((element) => {
-            let index = element.i;
-            let child = this._inventoryGrid[index];
-            let item = this._game.getGameData("item", element.key) as Item;
+        held.forEach((key, index) => {
+            const child = this._inventoryGrid[index];
+            if (!child) return; // more archetypes than slots is a config problem, not a crash
 
-            //
+            const item = this._game.getGameData("item", key) as Item;
+            if (!item) return;
+
+            const qty = inventory[key];
+
             let color = Rarity.getColor(item);
             child.background = color.bg;
             child.thickness = 2;
             child.color = color.color;
 
-            // dispose
-            child.getDescendants().forEach((el) => {
-                el.dispose();
-            });
-
-            // set metadata
-            child.metadata = {
-                item: item,
-                index: index,
-                background: child.background,
-            };
+            child.metadata = { item, key };
 
             // add item icon
             var imageData = this._loadedAssets[item.icon];
-            var img = new Image("itemImage_" + element.key, imageData);
+            var img = new Image("itemImage_" + key, imageData);
             img.stretch = Image.STRETCH_FILL;
             child.addControl(img);
 
             // add item qty
             const itemTxtQty = new TextBlock("itemTxtQty" + index);
-            itemTxtQty.text = element.qty;
+            itemTxtQty.text = String(qty);
             itemTxtQty.color = "#FFF";
             itemTxtQty.top = "-2px";
             itemTxtQty.left = "-2px";
@@ -240,21 +284,12 @@ export class Panel_Inventory extends Panel {
                     this._UI._Tooltip.close();
                 }
             });
-            // on hover tooltip
-            child.onPointerClickObservable.clear();
-            child.onPointerClickObservable.add((e) => {
-                // Clicking a bag slot used to sell it, from wherever you were
-                // standing, because selling was a message. It is a transfer now,
-                // so it happens at the vendor's Sell tab against what the chain
-                // says you hold — which is not necessarily what is in here yet.
-                if (child.metadata.item && e.buttonIndex === 2) {
-                    this._UI._Tooltip.close();
-                    this._UI._InventoryDropdown.showDropdown(child, item, element);
-                }
-            });
         });
 
-        // update golve value just in case
+        if (this.wallet && held.length === 0 && this._statusUI && this._statusUI.text === "") {
+            this.say("Nothing here yet - buy something from a vendor.");
+        }
+
         this.updateGold();
     }
 }

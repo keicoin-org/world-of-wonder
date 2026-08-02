@@ -34,6 +34,7 @@ promise about your intentions, not a fact about the world.
 | Buying | Server decrements gold, adds a row | Player signs a transfer; the issuer mints **after** the chain confirms it |
 | Selling | Server increments gold | Player signs the item away; the shop pays for what arrived |
 | The vendor panel | Sends a room message | Signs with the player's wallet, and reads the purse off the chain |
+| The bag panel | Reads `PlayerSchema.inventory` | Refreshes the player's on-chain item balances and purse |
 
 The database is still there, and deliberately: it holds accounts, characters, and
 where they were standing. Colyseus is still authoritative over presence and
@@ -121,15 +122,12 @@ working directory, so start it from the project root:
 - **The auction house.** SPEC §10.3 specifies it on `@keicoin/market`, which is
   M5 and does not exist. Building a database-backed one in the meantime would
   contradict everything above, so there is nothing rather than a lie.
-- **The bag still shows upstream's inventory.** The vendor is wholly on the chain
-  now — the purse it counts, the wares it sells, and what it will buy back all
-  come from there — but the inventory panel, equipping, loot and quest rewards
-  are still the database's. So a sword bought from a vendor is yours on the chain
-  and will not appear in the bag, and the gold in the bag's corner is not the
-  gold the vendor counts. The vendor shows its own numbers rather than papering
-  over the difference. Moving the bag across is the next slice, and the awkward
-  half-state until then is the honest way round: the chain is right and the panel
-  is behind, not the reverse.
+- **Equipping, loot and quest rewards still use upstream inventory state.** The
+  bag and vendor now show the chain's item balances and purse, so anything bought
+  or sold appears consistently in both. Gameplay rewards and equipped gear have
+  not moved yet; they are deliberately not merged into the bag because that would
+  make database rows look like on-chain ownership. Moving those producers and
+  consumers across is the next slice.
 - **The trainer still spends `player_data.gold`**, which is no longer money.
 - **`construction/`** — 757MB of `.blend` and `.afdesign` art *source*, against
   28MB for the whole runtime game. Get it from
