@@ -8,8 +8,18 @@
 import { Kei, MockNode, mockRpcHandler, type KeiNode } from 'kei-transaction'
 import Logger from '../utils/Logger'
 
+/** What `KEI_NETWORK` accepts. The SDK's own spelling, passed straight through. */
+export type Network = 'testnet' | 'mainnet' | 'mock'
+
+const NETWORKS: readonly Network[] = ['testnet', 'mainnet', 'mock']
+
 export interface Chain {
-  node: KeiNode | string
+  /**
+   * Undefined means "whichever public node the SDK picks for this network",
+   * which is the normal case and the one that needs no configuration.
+   */
+  node?: KeiNode | string
+  network: Network
   /**
    * The mock, when we made one. It has to be served over HTTP as well as used
    * in process, because the player's wallet lives in a browser and cannot reach
@@ -19,21 +29,52 @@ export interface Chain {
 }
 
 /**
- * `KEI_NODE` is a node URL. With none set the world runs against a mock this
- * process creates and then serves at `/rpc`, which is what lets the template be
- * cloned and run with no chain to install — the same trade Button makes at M1.
- * Nothing on a mock is worth anything, and it dies with the process.
+ * `KEI_NETWORK` is `testnet` (the default), `mainnet`, or `mock`.
+ * `KEI_NODE` overrides the URL for whichever of those is selected.
+ *
+ * The default is the real M3 testnet rather than a mock, because a world whose
+ * economy only exists inside one process teaches the wrong thing about what
+ * this template is for: the player's wallet is meant to outlive the server, and
+ * on a mock it cannot. Testnet Kei is still worth nothing and the chain may
+ * reset, which is the right amount of consequence while you are building.
+ *
+ * `mock` remains one variable away, and is the right choice offline or in a test
+ * that must not touch the network.
  */
 export async function openChain(): Promise<Chain> {
+  const network = resolveNetwork()
   const url = process.env.KEI_NODE
+
   if (url) {
-    Logger.info('[kei] node ' + url)
-    return { node: url }
+    Logger.info(`[kei] ${network} node ${url}`)
+    return { node: url, network }
   }
 
-  Logger.warning('[kei] no KEI_NODE set — serving an in-process mock chain at /rpc, which dies with this process')
-  const mock = await MockNode.create()
-  return { node: mock, mock }
+  if (network === 'mock') {
+    Logger.warning('[kei] KEI_NETWORK=mock — serving an in-process mock chain at /rpc, which dies with this process')
+    const mock = await MockNode.create()
+    return { node: mock, network, mock }
+  }
+
+  // No URL: the SDK resolves the public node for this network, and says so
+  // itself if there is not one yet. Mainnet is deliberately not open (SPEC §15),
+  // so selecting it without a KEI_NODE is meant to stop here rather than
+  // silently settle somewhere else.
+  Logger.info(`[kei] ${network} — using the SDK's public node for it`)
+  return { network }
+}
+
+function resolveNetwork(): Network {
+  const raw = (process.env.KEI_NETWORK ?? '').trim().toLowerCase()
+  if (raw === '') return 'testnet'
+  if ((NETWORKS as readonly string[]).includes(raw)) return raw as Network
+
+  throw new Error(`KEI_NETWORK must be one of ${NETWORKS.join(', ')} — got "${process.env.KEI_NETWORK}".`)
+}
+
+/** Only testnet hands out Kei. Mainnet has to be funded by a person (SPEC §5.6.5). */
+export function hasFaucet(network: Network): boolean {
+  return network !== 'mainnet'
 }
 
 /**
@@ -72,6 +113,8 @@ export function mountNodeRpc(app: any, mock: MockNode): void {
  * Without one a fresh seed is generated per run. That is fine against a mock,
  * where the ledger is new too, and wrong anywhere else — a new issuer means new
  * asset ids, so every balance and every item from the last run is unreachable.
+ * On the default testnet it also re-burns the issuance cost (SPEC §5.6.5) every
+ * restart, against a ledger that remembers, so set one before you play twice.
  */
 export function resolveIssuerSeed(): string {
   const seed = process.env.KEI_GAME_SEED

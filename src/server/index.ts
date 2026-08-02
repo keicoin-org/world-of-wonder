@@ -52,7 +52,8 @@ class GameServer {
         const chain = await openChain();
         this.economy = await startEconomy({
             seed: resolveIssuerSeed(),
-            node: chain.node,
+            ...(chain.node === undefined ? {} : { node: chain.node }),
+            network: chain.network,
             // SPEC §8: the game must be playable with payments switched off.
             exchange: process.env.KEI_EXCHANGE !== "off",
         });

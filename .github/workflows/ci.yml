@@ -42,6 +42,8 @@ jobs:
       - run: npm ci
 
       - name: economy rules, in-process
+        env:
+          KEI_NETWORK: mock
         run: npm test
 
       - run: npm run typecheck
@@ -51,9 +53,18 @@ jobs:
       - run: npm run client-build
 
       # The same rules across a URL, against a server that shares no memory with
-      # the test. No KEI_NODE, so it runs on the mock chain served at /rpc.
+      # the test.
+      #
+      # KEI_NETWORK=mock is pinned rather than inherited. The default is the
+      # public testnet, which is explicitly best-effort and rate-limited — six
+      # jobs starting at once are enough to get a 400 out of its faucet, and a
+      # red build that means "somebody else's node was busy" is worse than no
+      # build. What this job is asking about is the economy's rules, and those
+      # are the same on either chain.
       - name: economy rules, over HTTP
         shell: bash
+        env:
+          KEI_NETWORK: mock
         run: |
           npm run server-start > server.log 2>&1 &
           server=$!
