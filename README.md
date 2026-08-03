@@ -122,11 +122,13 @@ anything. Two consequences, both real:
 - **The hall is not the market.** It shows the listings of players it has heard
   of, which is fewer than every listing on the network. The panel says so
   instead of presenting its handful of offers as the whole book.
-- **The roster is in memory.** A restart empties it, and it refills as players
-  come back — a wallet announces itself when it opens and again whenever it
-  lists, buys, or cancels. A listing by somebody who has not been seen since is
-  invisible until they return, and locked by the ledger the whole time either
-  way.
+- **The roster is in memory, and capped.** A restart empties it, and it refills
+  as players come back — a wallet announces itself when it opens and again
+  whenever it lists, buys, or cancels. A listing by somebody who has not been
+  seen since is invisible until they return, and locked by the ledger the whole
+  time either way. The cap is 512 chains, least-recently-heard-from evicted,
+  because announcing is unauthenticated and otherwise whoever posted last would
+  decide how many node calls every refresh costs.
 
 Nothing the hall says is taken on trust. A wallet re-reads the offer off the
 chain before signing, and refuses if the price is not the one that was on

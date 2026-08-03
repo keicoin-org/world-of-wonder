@@ -300,7 +300,16 @@ export class Wallet {
 
         await this.announce();
         await this.refresh();
-        return this.asListing(offer);
+
+        const listing = this.asListing(offer);
+        if (!listing) {
+            // The offer is on the chain either way — it is this catalogue that
+            // cannot describe it, which means the shop and the chain disagree
+            // about what this world sells. Say that rather than returning
+            // nothing and letting the panel find out.
+            throw new Error(`${item.title} is listed, but this world's catalogue no longer recognises it. Reload the game.`);
+        }
+        return listing;
     }
 
     /**

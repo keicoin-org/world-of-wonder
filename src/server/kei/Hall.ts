@@ -105,6 +105,19 @@ const CACHE_MS = 3_000
 /** Settled swaps read per chain when summarising what things go for. */
 const HISTORY_LIMIT = 100
 
+/**
+ * How many chains the hall will ever walk.
+ *
+ * `watch` is reachable from an unauthenticated route and takes any well-formed
+ * address, so without a ceiling the cost of every read is set by whoever last
+ * posted to it — ten thousand invented addresses would be ten thousand node
+ * calls per panel refresh. The roster is a cache of where to look, so evicting
+ * the least recently heard-from is the right loss: they are the accounts least
+ * likely to be holding a live listing, and hearing from them again puts them
+ * straight back.
+ */
+const ROSTER_LIMIT = 512
+
 export function openHall(options: HallOptions): Hall {
   const { kei, coin, items } = options
 
@@ -118,8 +131,12 @@ export function openHall(options: HallOptions): Hall {
    * invisible in the other, since an unheard-of account's offers are simply not
    * listed, exactly as they would not be by any other reader who had not heard
    * of it either.
+   *
+   * A `Map` rather than a `Set` because insertion order is what bounds it: the
+   * oldest entry is the one heard from longest ago, and re-announcing moves an
+   * address back to the end.
    */
-  const traders = new Set<string>()
+  const traders = new Map<string, true>()
   let cached: { at: number; payload: HallPayload } | undefined
   let inflight: Promise<HallPayload> | undefined
   /** Bumped by `watch`, so a walk that started before a change never caches. */
@@ -185,7 +202,7 @@ export function openHall(options: HallOptions): Hall {
   }
 
   const walk = async (): Promise<HallPayload> => {
-    const from = [...traders]
+    const from = [...traders.keys()]
     if (from.length === 0) return { accounts: 0, listings: [], history: {} }
 
     const [offers, trades] = await Promise.all([
@@ -208,7 +225,15 @@ export function openHall(options: HallOptions): Hall {
   return {
     watch(address) {
       if (typeof address !== 'string' || !address.startsWith('kei_')) return
-      traders.add(address)
+      // Delete first, so re-announcing moves this address to the end of the
+      // insertion order rather than leaving it where it was.
+      traders.delete(address)
+      traders.set(address, true)
+      while (traders.size > ROSTER_LIMIT) {
+        const oldest = traders.keys().next()
+        if (oldest.done) break
+        traders.delete(oldest.value)
+      }
       // Whoever said this either just arrived or just traded, so the last walk
       // is out of date either way. Dropping it costs at most one extra read —
       // concurrent reads collapse into one walk below — and keeps a panel from
