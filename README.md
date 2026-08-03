@@ -126,7 +126,7 @@ anything. Two consequences, both real:
   as players come back — a wallet announces itself when it opens and again
   whenever it lists, buys, or cancels. A listing by somebody who has not been
   seen since is invisible until they return, and locked by the ledger the whole
-  time either way. The cap is 512 chains, least-recently-heard-from evicted,
+  time either way. The cap is 128 chains, least-recently-heard-from evicted,
   because announcing is unauthenticated and otherwise whoever posted last would
   decide how many node calls every refresh costs.
 

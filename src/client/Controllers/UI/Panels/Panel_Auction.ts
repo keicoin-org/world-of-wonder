@@ -209,7 +209,14 @@ export class Panel_Auction extends Panel {
 
     // ------------------------------------------------------------------ data
 
-    /** Ask the chain and the hall what is true, then draw the room around it. */
+    /**
+     * Ask the chain and the hall what is true, then draw the room around it.
+     *
+     * This owns the status line while it runs, and clears it when the read
+     * works — so a "the hall did not answer" from a minute ago does not sit
+     * there once it has. Anything with more to say than "this is current" says
+     * it after awaiting this, not before.
+     */
     private async reload(): Promise<void> {
         if (!this.wallet) {
             this.purseText.text = "No wallet — the chain could not be reached.";
@@ -224,6 +231,7 @@ export class Panel_Auction extends Panel {
             // seller wants answered while they are choosing a number.
             this.view = await this.wallet.hall();
             if (this.tab === "mine") this.listed = await this.wallet.myListings();
+            this.say("");
         } catch (error) {
             this.say("The hall did not answer, so this may be out of date.", "orange");
         }
@@ -544,17 +552,18 @@ export class Panel_Auction extends Panel {
     private async buy(listing: Listing): Promise<void> {
         this.busy = true;
         this.say("Settling " + listing.price + " gold against the listing...");
+        // Losing the race to another buyer is a normal outcome here rather than
+        // a fault, and the SDK's message already says which one happened. Every
+        // path redraws first and reports afterwards, because `reload` owns the
+        // status line while it runs.
         try {
             await this.wallet.accept(listing);
-            this.say("Bought " + listing.title + " for " + listing.price + " gold.", "lightgreen");
             this.selected = "";
+            await this.after();
+            this.say("Bought " + listing.title + " for " + listing.price + " gold.", "lightgreen");
         } catch (error) {
-            // Losing the race to another buyer is a normal outcome here, not a
-            // fault, and the SDK's message already says which one happened.
+            await this.after();
             this.say(error.message, "orange");
-        } finally {
-            this.busy = false;
-            await this.reload();
         }
     }
 
@@ -563,15 +572,14 @@ export class Panel_Auction extends Panel {
         this.say("Publishing the listing...");
         try {
             const listing = await this.wallet.list(row.key, price, qty);
-            this.say("Listed for " + listing.price + " gold. It is locked until it sells.", "lightgreen");
             this.tab = "mine";
             this.selected = listing.hash;
             this.highlightTabs();
+            await this.after();
+            this.say("Listed for " + listing.price + " gold. It is locked until it sells.", "lightgreen");
         } catch (error) {
+            await this.after();
             this.say(error.message, "orange");
-        } finally {
-            this.busy = false;
-            await this.reload();
         }
     }
 
@@ -580,13 +588,25 @@ export class Panel_Auction extends Panel {
         this.say("Taking " + listing.title + " back...");
         try {
             await this.wallet.cancel(listing);
-            this.say(listing.title + " is back in your bag.", "lightgreen");
             this.selected = "";
+            await this.after();
+            this.say(listing.title + " is back in your bag.", "lightgreen");
         } catch (error) {
+            await this.after();
             this.say(error.message, "orange");
+        }
+    }
+
+    /**
+     * Redraw before anything is reported, and only then let the buttons work
+     * again — the rows are rebuilt during the reload, and a second click landing
+     * on a row that is about to be replaced is the one way to sign twice.
+     */
+    private async after(): Promise<void> {
+        try {
+            await this.reload();
         } finally {
             this.busy = false;
-            await this.reload();
         }
     }
 

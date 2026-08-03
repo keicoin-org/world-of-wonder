@@ -115,8 +115,14 @@ const HISTORY_LIMIT = 100
  * the least recently heard-from is the right loss: they are the accounts least
  * likely to be holding a live listing, and hearing from them again puts them
  * straight back.
+ *
+ * The number is chosen against what a walk costs rather than against how many
+ * players a world might have. A chain is two calls — its open offers and its
+ * settled ones — and the SDK reads accounts one after another, so this is a
+ * ceiling of ~256 node calls per walk. Somewhere far above any session this
+ * template will see, and still a request that finishes.
  */
-const ROSTER_LIMIT = 512
+const ROSTER_LIMIT = 128
 
 export function openHall(options: HallOptions): Hall {
   const { kei, coin, items } = options
