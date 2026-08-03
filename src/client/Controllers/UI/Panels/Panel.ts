@@ -178,6 +178,9 @@ export class Panel {
             this._UI.panelCharacter._panel.isVisible = false;
             this._UI.panelHelp._panel.isVisible = false;
             this._UI.panelQuests._panel.isVisible = false;
+            // Constructed after the others, so it is not there yet the first
+            // time one of them opens.
+            if (this._UI.panelAuction) this._UI.panelAuction._panel.isVisible = false;
         }
 
         // if already open, close panel

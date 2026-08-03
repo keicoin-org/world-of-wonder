@@ -10,7 +10,7 @@
  *   npm run test:e2e
  */
 
-import { Kei } from 'kei-transaction'
+import { Kei, randomSeed } from 'kei-transaction'
 
 const BASE = process.env.KEI_TEST_BASE ?? 'http://localhost:3000'
 
@@ -90,6 +90,67 @@ if (granted.ok) {
 
   const sold = await (await fetch(`${BASE}/kei/wallet/${player.address}`)).json()
   check('the sword is no longer the player\'s', (sold.inventory?.sword_01 ?? 0) === 0, `${sold.inventory?.sword_01 ?? 0}`)
+
+  // ------------------------------------------------------------ auction house
+  //
+  // The same trade the panel makes, across a URL. Two browsers, two keys, and a
+  // server that only ever answers "here is who to read" — the listing block, the
+  // settlement block, and the gold all belong to the players.
+
+  const relist = await (
+    await fetch(`${BASE}/kei/order?address=${player.address}&key=sword_01`, { method: 'POST' })
+  ).json()
+  await gold.transfer(relist.to, relist.price)
+  const rebought = await until(async () => {
+    const held = await (await fetch(`${BASE}/kei/wallet/${player.address}`)).json()
+    return (held.inventory?.sword_01 ?? 0) >= 1
+  })
+  check('the player has a sword to auction', rebought)
+
+  const ASKING = 80
+  await player.sync()
+  // What the client's wallet does: announce, then sign the listing itself.
+  await fetch(`${BASE}/kei/hall/watch?address=${player.address}`, { method: 'POST' })
+  const offer = await player.market.offer({
+    give: { asset: sword.asset, amount: 1 },
+    want: { asset: catalogue.coin.asset, amount: ASKING },
+  })
+  await fetch(`${BASE}/kei/hall/watch?address=${player.address}`, { method: 'POST' })
+
+  const hall = await (await fetch(`${BASE}/kei/hall`)).json()
+  const stall = (hall.listings ?? []).find((entry: any) => entry.hash === offer.hash)
+  check('the hall serves the listing over HTTP', stall !== undefined, `${(hall.listings ?? []).length} listing(s)`)
+  check('priced in gold, and named as a sword', stall?.price === ASKING && stall?.key === 'sword_01', JSON.stringify(stall))
+
+  // A second player, holding a second key, sharing nothing with the first. The
+  // seed is named because `Kei.start()` persists one and hands the same wallet
+  // back on the next call — which is the right behaviour for a returning player
+  // in a browser and would make this a trade with itself.
+  const rival = await Kei.start({ node: `${BASE}/rpc`, seed: randomSeed() })
+  await fetch(`${BASE}/kei/grant?address=${rival.address}&amount=500`, { method: 'POST' })
+  await fetch(`${BASE}/kei/hall/watch?address=${rival.address}`, { method: 'POST' })
+  await rival.sync()
+
+  const purseBefore = await gold.balance()
+  await rival.market.accept(offer.hash)
+  await fetch(`${BASE}/kei/hall/watch?address=${rival.address}`, { method: 'POST' })
+
+  const bought = await until(async () => {
+    const held = await (await fetch(`${BASE}/kei/wallet/${rival.address}`)).json()
+    return (held.inventory?.sword_01 ?? 0) >= 1
+  })
+  check('the buyer owns the sword, and the server never touched it', bought)
+
+  await player.sync()
+  check('the seller was paid in gold, by the buyer', (await gold.balance()) === purseBefore + ASKING, `${await gold.balance()}`)
+
+  const after = await (await fetch(`${BASE}/kei/hall`)).json()
+  check('the listing is off the board', (after.listings ?? []).every((entry: any) => entry.hash !== offer.hash))
+  check(
+    'and the hall reports what a sword went for, off the chain',
+    after.history?.sword_01?.last === ASKING,
+    JSON.stringify(after.history?.sword_01),
+  )
 } else {
   console.log('  ..    /kei/grant is not exposed; skipping the funded half')
 }

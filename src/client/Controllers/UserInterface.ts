@@ -15,6 +15,7 @@ import {
     EntitySelectedBar,
     Tooltip,
     InventoryDropdown,
+    Panel_Auction,
     Panel_Inventory,
     CastingBar,
     ExperienceBar,
@@ -83,6 +84,7 @@ export class UserInterface {
     public panelHelp: Panel_Help;
     public panelDialog: Panel_Dialog;
     public panelQuests: Panel_Quests;
+    public panelAuction: Panel_Auction;
 
     // tooltip
     public _UITooltip;
@@ -232,6 +234,18 @@ export class UserInterface {
             vertical_position: Control.VERTICAL_ALIGNMENT_CENTER,
         });
 
+        // the auction house — players trading with each other, with this server
+        // taking no part in the trade (SPEC §9)
+        this.panelAuction = new Panel_Auction(this, currentPlayer, {
+            name: "Auction House",
+            width: "460px;",
+            height: "420px;",
+            top: "-50px;",
+            left: "0px;",
+            horizontal_position: Control.HORIZONTAL_ALIGNMENT_CENTER,
+            vertical_position: Control.VERTICAL_ALIGNMENT_CENTER,
+        });
+
         // open inventory by default
         this.panelInventory.open();
         //this.panelHelp.open();
@@ -290,6 +304,10 @@ export class UserInterface {
 
         if (this.panelQuests) {
             this.panelQuests.update();
+        }
+
+        if (this.panelAuction) {
+            this.panelAuction.update();
         }
     }
 

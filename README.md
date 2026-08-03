@@ -55,6 +55,7 @@ promise about your intentions, not a fact about the world.
 | Selling | Server increments gold | Player signs the item away; the shop pays for what arrived |
 | The vendor panel | Sends a room message | Signs with the player's wallet, and reads the purse off the chain |
 | The bag panel | Reads `PlayerSchema.inventory` | Refreshes the player's on-chain item balances and purse |
+| Player-to-player trade | Nothing upstream | An auction house. A listing is a block on the seller's own chain and a sale is one block that moves both legs |
 
 The database is still there, and deliberately: it holds accounts, characters, and
 where they were standing. Colyseus is still authoritative over presence and
@@ -89,30 +90,80 @@ for whoever found it. Reacting to an arrival costs the seller the item first,
 which is the only version of this that a stranger cannot exploit. What the shop
 pays is in the catalogue, so a client can still quote a price without asking.
 
+### The auction house takes none
+
+Players trading with each other is the part SPEC §9 says a hobbyist cannot build
+safely, and here it is not built at all — it is `@keicoin/market`. Press **AH** in
+the menu and the panel does three things, none of which passes through this
+server:
+
+- **List.** `market.offer()` writes one block on your own chain that locks the
+  item. Not `market.sell()`, which prices in Kei — gold is an asset this world
+  issues, so a listing is an item on one side and gold on the other. `sell()`
+  would have compiled and quietly denominated the hall in a currency the game
+  does not use.
+- **Buy.** `market.accept()` writes one block that moves the item and the gold
+  together or moves neither (SPEC §9.2). The seller signed their half; you sign
+  yours. Nobody signs for anybody.
+- **Cancel.** Only the author can, because theirs is the only asset locked. The
+  lock is also why an abandoned listing is the seller's problem rather than the
+  network's — there is no expiry clock to add (§9.3).
+
+Price history is the settled swaps and nothing else. There is no time-series
+table here, and the numbers under a listing were read back off the chain.
+
+**What the server does is remember which chains to read.** An offer lives with
+its author (§9.1) and Kei ships no indexer (§9.4), so there is no query for
+"every listing in the world" — somebody has to keep the list of accounts worth
+asking. That is `src/server/kei/Hall.ts`, and it is bookkeeping about *where to
+look* rather than about who owns what, so it puts nobody back in custody of
+anything. Two consequences, both real:
+
+- **The hall is not the market.** It shows the listings of players it has heard
+  of, which is fewer than every listing on the network. The panel says so
+  instead of presenting its handful of offers as the whole book.
+- **The roster is in memory.** A restart empties it, and it refills as players
+  come back — a wallet announces itself when it opens and again whenever it
+  lists, buys, or cancels. A listing by somebody who has not been seen since is
+  invisible until they return, and locked by the ledger the whole time either
+  way.
+
+Nothing the hall says is taken on trust. A wallet re-reads the offer off the
+chain before signing, and refuses if the price is not the one that was on
+screen — so the worst a wrong hall can do is hide a listing or advertise a dead
+one, and the second fails at the ledger rather than costing anybody gold. That
+is the property that makes it safe for this server to be involved at all, given
+it can mint the currency being traded.
+
 ## Where things are
 
 ```
 src/server/kei/Economy.ts       the issuer: gold, items, the shop. Read this one.
+src/server/kei/Hall.ts          the auction house's list of chains to read. It signs nothing.
 src/server/kei/api.ts           the HTTP surface. Nothing here can move a player's money.
 src/server/kei/node.ts          which chain, and which account issues the money
 src/server/kei/Economy.test.ts  the rules, against a chain in-process
-src/server/kei/endtoend.test.ts the same thing across a URL, the way a browser does it
+src/server/kei/Market.test.ts   two players trading, with this server on neither leg
+src/server/kei/endtoend.test.ts the same things across a URL, the way a browser does it
 src/client/Controllers/Wallet.ts  the player's key, and the only thing that spends their gold
 src/client/Controllers/UI/Panels/Dialog/VendorDialog.ts  the shop, as a player sees it
+src/client/Controllers/UI/Panels/Panel_Auction.ts        the auction house, as a player sees it
 src/client/Utils/index.ts       where the client looks for the server
 ```
 
 ## Tests
 
 ```sh
-npm run test:economy    # the rules, in-process
+npm run test            # test:economy and test:market, both in-process
 npm run server-start &
-npm run test:e2e        # the same thing over HTTP, sharing no memory with the server
+npm run test:e2e        # the same things over HTTP, sharing no memory with the server
 ```
 
 `test:e2e` is the one worth trusting. It signs its own transfers against `/rpc`
 and waits for the item to arrive, so passing it means a hosted client can work
-rather than suggesting it might.
+rather than suggesting it might. It ends with two wallets trading a sword for
+gold through the auction house across the same wire, which is the exact path the
+panel takes.
 
 ## Dependency security
 
@@ -208,43 +259,17 @@ variable. A host that assigns you a port expects that file to be edited.
 
 ## What is not here yet
 
-- **The auction house's interface.** The last thing SPEC §13 asks of M7, and what
-  is missing is now the screen rather than the mechanism.
+- **Bids, and anything an auction is normally called.** The hall lists items for
+  gold and settles them; it does not do timed auctions, reserve prices, or
+  standing buy orders. `market.bid()` is the mirror of a sale and would be the
+  next thing, and the panel does not read bids today, so a player who writes one
+  by hand is invisible in it.
 
-  The dependency bump this section used to ask for has happened — `^0.2.0`
-  predated the market, `^0.3.0` exposes it as `kei.market` — and the trade it
-  unblocks is tested in
-  [`src/server/kei/Market.test.ts`](src/server/kei/Market.test.ts): one player
-  lists a sword bought from the shop, another buys it, and the gold and the sword
-  move in one settlement with this server taking no part in it.
-
-  **It is `market.offer()`, not `market.sell()`.** `sell()` prices things in Kei,
-  and gold is not Kei — it is an asset this world issues, so a listing is an item
-  on one side and gold on the other. Writing it the other way would quietly price
-  the auction house in a currency the game does not use.
-
-  What remains is a panel: the player's own listings, somebody else's to accept,
-  and a way to cancel. `market.offers({ from })` reads them back. Note the limit
-  before designing around it — there is no network-wide order book, because an
-  offer lives on its author's chain and SPEC §9.4 ships no indexer, so a panel can
-  honestly show *these* players' offers and not *the* market's.
-
-  The test also pins the part that would be easy to get wrong later: a listed item
-  cannot also be handed to someone, and the ledger is what refuses it. An auction
-  house backed by a table on this server would look identical to a player and mean
-  the opposite thing, since the shop can already mint gold.
-
-  That last argument is the design constraint, and it is worth knowing before
-  starting rather than halfway through: an offer lives on the chain of whoever
-  wrote it (SPEC §9.1) and Kei ships no indexer (§9.4), so there is no query for
-  "every listing in the world". A hall that shows every seller's wares needs the
-  server to keep the list of accounts to ask — which is bookkeeping about *where
-  to look*, not about who owns what, and so does not put the developer back in
-  custody of anything. `carpet-markets` does exactly this in its `registry.ts`
-  and is the worked example to copy.
-
-  Building a database-backed auction house instead would still contradict
-  everything above, and that has not changed.
+  Timed bidding in particular is not a small addition and should not be added
+  casually: the block-lattice has no clock (SPEC §5.5), so "highest bid when the
+  timer runs out" cannot be a consensus rule. It would have to be somebody's
+  wall clock, and the somebody would be this server — which is the shape the
+  rest of the file exists to avoid.
 - **Equipping, loot and quest rewards still use upstream inventory state.** The
   bag and vendor now show the chain's item balances and purse, so anything bought
   or sold appears consistently in both. Gameplay rewards and equipped gear have

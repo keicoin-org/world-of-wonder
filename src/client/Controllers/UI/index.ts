@@ -11,6 +11,7 @@ import { MainMenu } from "./MainMenu";
 import { RessurectBox } from "./RessurectBox";
 import { DamageText } from "./DamageText";
 
+import { Panel_Auction } from "./Panels/Panel_Auction";
 import { Panel_Inventory } from "./Panels/Panel_Inventory";
 import { Panel_Abilities } from "./Panels/Panel_Abilities";
 import { Panel_Character } from "./Panels/Panel_Character";
@@ -28,6 +29,7 @@ export {
     EntitySelectedBar,
     Tooltip,
     InventoryDropdown,
+    Panel_Auction,
     Panel_Inventory,
     CastingBar,
     ExperienceBar,
