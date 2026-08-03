@@ -208,9 +208,29 @@ variable. A host that assigns you a port expects that file to be edited.
 
 ## What is not here yet
 
-- **The auction house.** SPEC §10.3 specifies it on `@keicoin/market`, which is
-  M5 and does not exist. Building a database-backed one in the meantime would
-  contradict everything above, so there is nothing rather than a lie.
+- **The auction house**, which is the last thing SPEC §13 asks of M7. It used to
+  say here that `@keicoin/market` did not exist. It does: M5 is merged in both
+  `kei-transaction` and `kei-node`, and `@keicoin/market@0.1.0` has been on npm
+  since 2 August 2026. So this is no longer blocked on anything but the work.
+
+  What it needs first is a dependency bump. This repo is pinned to
+  `kei-transaction` `^0.2.0`, which predates the market and does not export it;
+  `^0.3.0` exposes it as `kei.market`, with no second dependency to add. From
+  there an auction house is `market.sell()` to list an item, `market.accept()` to
+  buy one, `market.cancel()` to withdraw a listing, and `market.offers({ from })`
+  to read them back.
+
+  That last argument is the design constraint, and it is worth knowing before
+  starting rather than halfway through: an offer lives on the chain of whoever
+  wrote it (SPEC §9.1) and Kei ships no indexer (§9.4), so there is no query for
+  "every listing in the world". A hall that shows every seller's wares needs the
+  server to keep the list of accounts to ask — which is bookkeeping about *where
+  to look*, not about who owns what, and so does not put the developer back in
+  custody of anything. `carpet-markets` does exactly this in its `registry.ts`
+  and is the worked example to copy.
+
+  Building a database-backed auction house instead would still contradict
+  everything above, and that has not changed.
 - **Equipping, loot and quest rewards still use upstream inventory state.** The
   bag and vendor now show the chain's item balances and purse, so anything bought
   or sold appears consistently in both. Gameplay rewards and equipped gear have
