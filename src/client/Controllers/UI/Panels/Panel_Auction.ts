@@ -396,7 +396,15 @@ export class Panel_Auction extends Panel {
         if (!listing) return;
 
         const mine = this.tab === "mine";
-        const action = this.actionButton(mine ? "Cancel" : "Buy " + listing.price + "g", mine ? "gray" : "orange");
+        // Greyed rather than hidden, the way the vendor does it: not being able
+        // to afford something is worth seeing, and it stops being true after a
+        // sale of your own. The button still tries — the ledger is what refuses,
+        // and its refusal is a better sentence than any guess made here.
+        const affordable = mine || (this.wallet && this.wallet.gold >= listing.price);
+        const action = this.actionButton(
+            mine ? "Cancel" : "Buy " + listing.price + "g",
+            mine ? "gray" : affordable ? "orange" : "#5a4a24"
+        );
         action.onPointerClickObservable.add(() => {
             if (this.busy) return;
             void (mine ? this.cancel(listing) : this.buy(listing));
