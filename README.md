@@ -131,11 +131,12 @@ anything. Two consequences, both real:
   decide how many node calls every refresh costs.
 
 Nothing the hall says is taken on trust. A wallet re-reads the offer off the
-chain before signing, and refuses if the price is not the one that was on
-screen — so the worst a wrong hall can do is hide a listing or advertise a dead
-one, and the second fails at the ledger rather than costing anybody gold. That
-is the property that makes it safe for this server to be involved at all, given
-it can mint the currency being traded.
+chain before signing, rebuilds its title from the local catalogue, and refuses
+unless the seller, item asset, quantity, and price are exactly the ones that
+were on screen — so the worst a wrong hall can do is hide a listing or advertise
+a dead one. It cannot substitute another item or cost anybody gold. That is the
+property that makes it safe for this server to be involved at all, given it can
+mint the currency being traded.
 
 ## Where things are
 

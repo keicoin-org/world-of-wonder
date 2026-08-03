@@ -18,6 +18,7 @@ import axios from "axios";
 import { Kei, type Offer } from "kei-transaction";
 
 import { apiUrl, nodeUrl } from "../Utils/index";
+import { offerMatchesDisplay } from "../../shared/market";
 
 export interface ShopItem {
     key: string;
@@ -243,16 +244,24 @@ export class Wallet {
      */
     public async hall(): Promise<HallView> {
         const view = (await axios.get(this._base + "/kei/hall")).data;
-        const listings: Listing[] = (view.listings ?? []).map((stall) => ({
-            hash: stall.hash,
-            seller: stall.seller,
-            key: stall.key,
-            title: stall.title,
-            qty: stall.qty,
-            price: stall.price,
-            each: stall.each,
-            mine: stall.seller === this.address,
-        }));
+        const listings: Listing[] = [];
+        (view.listings ?? []).forEach((stall) => {
+            // The hall is not trusted to name an asset. Use its catalogue key
+            // only to find this client's copy of the title; an unknown key is
+            // not something this world can safely offer to buy.
+            const item = this._shop.get(stall.key);
+            if (!item) return;
+            listings.push({
+                hash: stall.hash,
+                seller: stall.seller,
+                key: item.key,
+                title: item.title,
+                qty: stall.qty,
+                price: stall.price,
+                each: stall.each,
+                mine: stall.seller === this.address,
+            });
+        });
         return { accounts: view.accounts ?? 0, listings, history: view.history ?? {} };
     }
 
@@ -330,9 +339,10 @@ export class Wallet {
         if (!live || live.state !== "open") {
             throw new Error(`${listing.title} is gone — somebody else bought it, or the seller took it back.`);
         }
-        if (live.want.asset !== this._coin || live.want.amount !== listing.price || live.give.amount !== listing.qty) {
+        const item = this._shop.get(listing.key);
+        if (!item || !offerMatchesDisplay(live, listing, item.asset, this._coin)) {
             throw new Error(
-                `That listing changed since it was shown to you — it now asks ${live.want.amount} for ${live.give.amount}. Refresh the hall and look again.`
+                "That listing does not match the seller, item, quantity, and price that were shown to you. Refresh the hall and look again."
             );
         }
 

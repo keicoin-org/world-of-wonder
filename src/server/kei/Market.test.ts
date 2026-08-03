@@ -23,6 +23,7 @@
 
 import { Kei } from 'kei-transaction'
 
+import { offerMatchesDisplay } from '../../shared/market'
 import { startEconomy, STARTING_GOLD } from './Economy'
 import { openHall } from './Hall'
 
@@ -108,6 +109,34 @@ check('the hall shows the listing', stall !== undefined, `${open.listings.length
 check('and shows it as a sword, priced in gold', stall?.key === 'sword_01' && stall?.price === ASKING, JSON.stringify(stall))
 check('read off one chain, not a table', open.accounts === 1, `${open.accounts} account(s)`)
 check('nothing has sold yet, which is not the same as selling for nothing', open.history['sword_01'] === undefined)
+
+// The hall is not trusted. Re-reading by hash is only a defence if every leg
+// shown to the buyer is bound to what came back from the chain: price and
+// quantity alone would let a dishonest hall substitute another item offered at
+// the same numbers, or mislabel who is selling it.
+const displayed = {
+  hash: offer.hash,
+  seller: offer.from,
+  qty: offer.give.amount,
+  price: offer.want.amount,
+}
+check(
+  'the live offer matches the exact trade displayed to the buyer',
+  offerMatchesDisplay(offer, displayed, sword.asset, catalogue.coin.asset),
+)
+check(
+  'a same-price offer for another asset is refused',
+  !offerMatchesDisplay(
+    { ...offer, give: { ...offer.give, asset: 'F'.repeat(64) } },
+    displayed,
+    sword.asset,
+    catalogue.coin.asset,
+  ),
+)
+check(
+  'a hall cannot relabel the seller either',
+  !offerMatchesDisplay(offer, { ...displayed, seller: buyer.address }, sword.asset, catalogue.coin.asset),
+)
 
 await buyer.market.accept(offer)
 // What a client does after signing: say there is another chain worth reading.
