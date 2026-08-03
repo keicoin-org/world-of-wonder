@@ -208,17 +208,31 @@ variable. A host that assigns you a port expects that file to be edited.
 
 ## What is not here yet
 
-- **The auction house**, which is the last thing SPEC §13 asks of M7. It used to
-  say here that `@keicoin/market` did not exist. It does: M5 is merged in both
-  `kei-transaction` and `kei-node`, and `@keicoin/market@0.1.0` has been on npm
-  since 2 August 2026. So this is no longer blocked on anything but the work.
+- **The auction house's interface.** The last thing SPEC §13 asks of M7, and what
+  is missing is now the screen rather than the mechanism.
 
-  What it needs first is a dependency bump. This repo is pinned to
-  `kei-transaction` `^0.2.0`, which predates the market and does not export it;
-  `^0.3.0` exposes it as `kei.market`, with no second dependency to add. From
-  there an auction house is `market.sell()` to list an item, `market.accept()` to
-  buy one, `market.cancel()` to withdraw a listing, and `market.offers({ from })`
-  to read them back.
+  The dependency bump this section used to ask for has happened — `^0.2.0`
+  predated the market, `^0.3.0` exposes it as `kei.market` — and the trade it
+  unblocks is tested in
+  [`src/server/kei/Market.test.ts`](src/server/kei/Market.test.ts): one player
+  lists a sword bought from the shop, another buys it, and the gold and the sword
+  move in one settlement with this server taking no part in it.
+
+  **It is `market.offer()`, not `market.sell()`.** `sell()` prices things in Kei,
+  and gold is not Kei — it is an asset this world issues, so a listing is an item
+  on one side and gold on the other. Writing it the other way would quietly price
+  the auction house in a currency the game does not use.
+
+  What remains is a panel: the player's own listings, somebody else's to accept,
+  and a way to cancel. `market.offers({ from })` reads them back. Note the limit
+  before designing around it — there is no network-wide order book, because an
+  offer lives on its author's chain and SPEC §9.4 ships no indexer, so a panel can
+  honestly show *these* players' offers and not *the* market's.
+
+  The test also pins the part that would be easy to get wrong later: a listed item
+  cannot also be handed to someone, and the ledger is what refuses it. An auction
+  house backed by a table on this server would look identical to a player and mean
+  the opposite thing, since the shop can already mint gold.
 
   That last argument is the design constraint, and it is worth knowing before
   starting rather than halfway through: an offer lives on the chain of whoever
