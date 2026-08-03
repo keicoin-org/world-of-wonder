@@ -182,6 +182,15 @@ export class MainMenu {
                     this.openPanel("character");
                 },
             },
+            // No icon ships for this one, so it wears its initials rather than
+            // borrowing a picture that means something else.
+            auction: {
+                menuTitle: "Auction House",
+                label: "AH",
+                click: () => {
+                    this.openPanel("auction");
+                },
+            },
             help: {
                 menuTitle: "Help",
                 icon: "ICON_MENU_help",
@@ -211,7 +220,7 @@ export class MainMenu {
         let i = 0;
         for (let index in menuItems) {
             let menuItem = menuItems[index];
-            const button = createButton("button_" + i, "", "35px", "30px", menuItem.icon);
+            const button = createButton("button_" + i, menuItem.label ?? "", "35px", "30px", menuItem.icon);
             grid.addControl(button);
 
             if (menuItem.click) {
@@ -250,6 +259,9 @@ export class MainMenu {
                 break;
             case "quests":
                 this._UI.panelQuests.open();
+                break;
+            case "auction":
+                this._UI.panelAuction.open();
                 break;
         }
     }

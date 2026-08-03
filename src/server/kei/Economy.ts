@@ -18,6 +18,7 @@
 import { Kei, type IssuerToken, type Item } from 'kei-transaction'
 import type { KeiNode } from 'kei-transaction'
 
+import { openHall, type Hall } from './Hall'
 import { ItemsDB } from '../data/ItemDB'
 import type { Item as ItemData } from '../../shared/types'
 
@@ -79,6 +80,11 @@ export interface CataloguePayload {
 
 export interface Economy {
   address: string
+  /**
+   * The auction house. It is not part of the shop and cannot be: players trade
+   * with each other there, and this account takes no side in it (SPEC §9.2).
+   */
+  hall: Hall
   catalogue(): CataloguePayload
   /** Take an order, so an anonymous coin transfer can be matched to a purchase. */
   order(player: string, key: string, qty?: number): Promise<{ to: string; price: number; asset: string }>
@@ -173,6 +179,16 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
     itemKeys.set(item.id, key)
   }
 
+  // The auction house reads with this wallet and signs nothing with it. Players
+  // trade with each other there; the shop is not a party to any of it.
+  const hall = openHall({
+    kei,
+    coin: gold.id,
+    items: new Map(
+      [...itemKeys].map(([asset, key]) => [asset, { key, title: (ItemsDB[key] as ItemData).title ?? key }]),
+    ),
+  })
+
   const exchange = options.exchange !== false
   const stopTopUps = exchange
     ? kei.acceptTopUps({ token: gold, rate: GOLD_PER_KEI, minimum: MINIMUM_TOP_UP })
@@ -193,6 +209,11 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
    * item it is, and its being here says whose it was.
    */
   const stopSettling = kei.on('asset-received', (arrival) => {
+    // Somebody who has traded with the shop is somebody whose chain may carry a
+    // listing later, so the hall's roster fills itself out of ordinary play
+    // rather than out of a sign-up (see Hall.ts).
+    hall.watch(arrival.from)
+
     if (arrival.asset === gold.id) {
       const order = orders.get(arrival.from)
       if (!order || arrival.amount < order.price) return
@@ -231,6 +252,7 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
 
   return {
     address: kei.address,
+    hall,
 
     catalogue() {
       return {
@@ -267,6 +289,7 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
         if (Date.now() - order.at > ORDER_TTL_MS) orders.delete(who)
       }
       orders.set(player, { key, qty, price, at: Date.now() })
+      hall.watch(player)
       return { to: kei.address, price, asset: gold.id }
     },
 
@@ -292,6 +315,7 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
     close() {
       stopTopUps?.()
       stopSettling()
+      hall.close()
       orders.clear()
       kei.close()
     },

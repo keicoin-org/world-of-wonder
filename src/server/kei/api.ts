@@ -72,6 +72,41 @@ export function mountEconomyApi(app: any, economy: Economy): void {
   // client can quote a price without asking for one.
 
   /**
+   * The auction house, read off the chains of the accounts it knows to ask.
+   *
+   * There is no listing here either, and for a stronger reason than above: a
+   * listing is a `swap_offer` block on the seller's own chain, so it is not
+   * something a server *can* do for them. The client signs it, and the two
+   * routes below are the whole of this server's involvement in a trade between
+   * two players — a list of addresses in, a list of listings out.
+   */
+  app.get('/kei/hall', async (_request: any, response: any) => {
+    try {
+      response.json(await economy.hall.read())
+    } catch (error) {
+      Logger.error('[kei][hall] ' + (error as Error).message)
+      response.status(502).json({ error: 'The node did not answer, so the hall is empty rather than up to date.' })
+    }
+  })
+
+  /**
+   * Announce an address as one worth reading.
+   *
+   * Nothing is claimed by saying this and nothing is granted by it: an account
+   * with no offers contributes an empty read, and an account with offers had
+   * them whether or not anyone was looking. It is the client's half of the
+   * bookkeeping Hall.ts exists to do.
+   */
+  app.post('/kei/hall/watch', (request: any, response: any) => {
+    const address = request.query.address
+    if (!looksLikeAddress(address)) {
+      return response.status(400).json({ error: 'That is not a Kei address.' })
+    }
+    economy.hall.watch(address)
+    response.json({ watching: address })
+  })
+
+  /**
    * A faucet, and only ever a development one.
    *
    * Granting gold is a mint the issuer signs, so an endpoint that does it on

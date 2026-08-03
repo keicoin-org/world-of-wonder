@@ -1,22 +1,31 @@
 /**
- * The auction house's claim, tested: two players trade an item for gold and the
- * server is not part of the trade. Run with `npm run test:market`.
+ * The auction house, end to end: two players trade an item for gold, the server
+ * is not part of the trade, and the hall can nonetheless show what is for sale.
+ * Run with `npm run test:market`.
  *
- * This is the piece SPEC §13 still asks of M7, and the reason it is worth a test
- * before any UI exists is that the obvious implementation is the wrong one. An
- * auction house backed by a table on this server would look identical to a
- * player and would mean the opposite thing — the shop can already mint gold, so
- * a server that also brokered trades could invent both halves of one.
+ * This is the piece SPEC §13 asks of M7, and the reason it is worth a test at
+ * all is that the obvious implementation is the wrong one. An auction house
+ * backed by a table on this server would look identical to a player and would
+ * mean the opposite thing — the shop can already mint gold, so a server that
+ * also brokered trades could invent both halves of one.
  *
  * The other thing this pins down is the denomination. `market.sell()` prices in
  * Kei, and gold is not Kei: it is an asset this world issues. So the auction
  * house is `market.offer()`, item on one side and gold on the other, which the
  * ledger settles as one block or not at all.
+ *
+ * The second half covers what is left for the server to do, which is to be the
+ * list of chains worth reading (SPEC §9.4 ships no indexer). Everything it
+ * reports is read back off the chain, so the checks below are as much about what
+ * the hall cannot do — invent a listing, hide a settlement, hold anybody's
+ * asset — as about what it shows.
  */
 
 import { Kei } from 'kei-transaction'
 
+import { offerMatchesDisplay } from '../../shared/market'
 import { startEconomy, STARTING_GOLD } from './Economy'
+import { openHall } from './Hall'
 
 const ISSUER_SEED = 'A'.repeat(64)
 const SELLER_SEED = 'C'.repeat(64)
@@ -91,7 +100,48 @@ try {
 }
 check('a listed item cannot also be given away', doubleSpend !== '', doubleSpend)
 
+// The hall, which is where a player finds any of this. The seller is already on
+// its roster because they ordered from the shop; a browser announces itself the
+// same way when it opens a wallet.
+const open = await economy.hall.read()
+const stall = open.listings.find((entry) => entry.hash === offer.hash)
+check('the hall shows the listing', stall !== undefined, `${open.listings.length} listing(s)`)
+check('and shows it as a sword, priced in gold', stall?.key === 'sword_01' && stall?.price === ASKING, JSON.stringify(stall))
+check('read off one chain, not a table', open.accounts === 1, `${open.accounts} account(s)`)
+check('nothing has sold yet, which is not the same as selling for nothing', open.history['sword_01'] === undefined)
+
+// The hall is not trusted. Re-reading by hash is only a defence if every leg
+// shown to the buyer is bound to what came back from the chain: price and
+// quantity alone would let a dishonest hall substitute another item offered at
+// the same numbers, or mislabel who is selling it.
+const displayed = {
+  hash: offer.hash,
+  seller: offer.from,
+  qty: offer.give.amount,
+  price: offer.want.amount,
+}
+check(
+  'the live offer matches the exact trade displayed to the buyer',
+  offerMatchesDisplay(offer, displayed, sword.asset, catalogue.coin.asset),
+)
+check(
+  'a same-price offer for another asset is refused',
+  !offerMatchesDisplay(
+    { ...offer, give: { ...offer.give, asset: 'F'.repeat(64) } },
+    displayed,
+    sword.asset,
+    catalogue.coin.asset,
+  ),
+)
+check(
+  'a hall cannot relabel the seller either',
+  !offerMatchesDisplay(offer, { ...displayed, seller: buyer.address }, sword.asset, catalogue.coin.asset),
+)
+
 await buyer.market.accept(offer)
+// What a client does after signing: say there is another chain worth reading.
+// The hall never sees the settlement itself — it is not party to one.
+economy.hall.watch(buyer.address)
 
 const traded = await until(async () => {
   const held = await economy.inventoryOf(buyer.address)
@@ -116,6 +166,63 @@ check(
   'the trade moved gold rather than making it',
   (await sellerGold.balance()) + (await buyerGold.balance()) === sellerBefore + buyerBefore,
 )
+
+// Price history is the settled swaps and nothing else — no time series, and
+// nothing this server wrote down (SPEC §9.1).
+const settled = await economy.hall.read()
+check('the listing is gone from the hall', settled.listings.every((entry) => entry.hash !== offer.hash))
+check(
+  'and the hall now knows what a sword goes for',
+  settled.history['sword_01']?.last === ASKING && settled.history['sword_01']?.trades === 1,
+  JSON.stringify(settled.history['sword_01']),
+)
+
+// A listing taken back, which is the other way an offer leaves the hall. Only
+// its author can write that block, because only their asset is locked (§9.2).
+const second = await buyer.market.offer({
+  give: { asset: sword.asset, amount: 1 },
+  want: { asset: catalogue.coin.asset, amount: ASKING + 5 },
+})
+economy.hall.watch(buyer.address)
+const relisted = await economy.hall.read()
+check('a second seller\'s listing shows up too', relisted.listings.some((entry) => entry.hash === second.hash))
+
+// The limit, pinned rather than described. A hall that has not heard of the
+// buyer cannot see the buyer's listing, because an offer lives on its author's
+// chain and there is no index of chains (SPEC §9.1, §9.4). Being told is the
+// only way, and being told grants nothing.
+const stranger = openHall({
+  kei: seller,
+  coin: catalogue.coin.asset,
+  items: new Map([[sword.asset, { key: 'sword_01', title: sword.title }]]),
+})
+const unheard = await stranger.read()
+check('a hall that has heard of nobody shows nothing', unheard.listings.length === 0 && unheard.accounts === 0)
+stranger.watch(buyer.address)
+const heard = await stranger.read()
+check('and shows the same listing once it is told where to look', heard.listings.some((entry) => entry.hash === second.hash))
+stranger.close()
+
+let notMine = ''
+try {
+  await seller.market.cancel(second)
+} catch (error) {
+  notMine = (error as Error).message
+}
+check('somebody else cannot cancel it', notMine !== '', notMine)
+
+await buyer.market.cancel(second)
+economy.hall.watch(buyer.address)
+const withdrawn = await economy.hall.read()
+check('cancelling takes it off the board', withdrawn.listings.every((entry) => entry.hash !== second.hash))
+
+await buyer.sync()
+const backInBag = await economy.inventoryOf(buyer.address)
+check('and puts the sword back in the seller\'s bag', (backInBag['sword_01'] ?? 0) === 1, `${backInBag['sword_01'] ?? 0}`)
+
+// The hall is an index, not a party. It never held the sword, because it cannot
+// — it signs nothing at all.
+check('the shop never held the sword any of this was about', (await economy.inventoryOf(economy.address))['sword_01'] === undefined)
 
 console.log(failures === 0 ? '\nall good' : `\n${failures} failed`)
 process.exit(failures === 0 ? 0 : 1)

@@ -15,9 +15,10 @@
  */
 
 import axios from "axios";
-import { Kei } from "kei-transaction";
+import { Kei, type Offer } from "kei-transaction";
 
 import { apiUrl, nodeUrl } from "../Utils/index";
+import { offerMatchesDisplay } from "../../shared/market";
 
 export interface ShopItem {
     key: string;
@@ -28,6 +29,39 @@ export interface ShopItem {
     buyback: number;
     asset: string;
     sellable: boolean;
+}
+
+/** One auction-house listing: a `swap_offer` block on somebody's own chain. */
+export interface Listing {
+    /** The offer block's hash, which is its id (SPEC §9.3). */
+    hash: string;
+    seller: string;
+    key: string;
+    title: string;
+    qty: number;
+    /** Total gold asked for the lot. */
+    price: number;
+    /** Gold per unit. */
+    each: number;
+    /** Written by this wallet, so it can be cancelled and cannot be accepted. */
+    mine: boolean;
+}
+
+/** What an archetype has sold for in the hall, read off settled swaps. */
+export interface Sold {
+    key: string;
+    last: number;
+    median: number;
+    low: number;
+    high: number;
+    trades: number;
+}
+
+export interface HallView {
+    /** How many chains the server walked. Zero means nobody has been seen yet. */
+    accounts: number;
+    listings: Listing[];
+    history: { [key: string]: Sold };
 }
 
 interface Catalogue {
@@ -46,6 +80,8 @@ export class Wallet {
     private readonly _kei;
     private readonly _base: string;
     private readonly _shop: Map<string, ShopItem> = new Map();
+    /** The same wares, keyed the way an offer names them. */
+    private readonly _byAsset: Map<string, ShopItem> = new Map();
     private readonly _coin: string;
     private readonly _coinScale: number;
 
@@ -64,7 +100,10 @@ export class Wallet {
         this._coinScale = 10 ** catalogue.coin.decimals;
         this.address = kei.address;
         this.shopkeeper = catalogue.issuer;
-        catalogue.items.forEach((item) => this._shop.set(item.key, item));
+        catalogue.items.forEach((item) => {
+            this._shop.set(item.key, item);
+            this._byAsset.set(item.asset, item);
+        });
     }
 
     /**
@@ -77,6 +116,10 @@ export class Wallet {
         const catalogue: Catalogue = (await axios.get(base + "/kei/catalogue")).data;
         const kei = await Kei.start({ node: nodeUrl(port), network: catalogue.network });
         const wallet = new Wallet(kei, base, catalogue);
+        // The auction house cannot find this player's listings unless somebody
+        // tells it there is a chain here to read (SPEC §9.4 — no indexer). Doing
+        // it on open is what makes the hall's roster survive a server restart.
+        void wallet.announce();
         await wallet.refresh();
         return wallet;
     }
@@ -186,6 +229,160 @@ export class Wallet {
             throw new Error(`The shop has your ${item.title} and has not paid yet. Check your purse in a moment.`);
         }
         return this.gold - before;
+    }
+
+    // --------------------------------------------------------- auction house
+
+    /**
+     * What is for sale, across the chains the hall knows to ask (SPEC §9.1).
+     *
+     * The server assembles this because it is the one holding the list of
+     * addresses, and for no other reason — every number in it was read off the
+     * chain and would be identical if this browser walked the same accounts
+     * itself. Nothing here is taken on trust: `accept` re-reads the offer before
+     * signing anything.
+     */
+    public async hall(): Promise<HallView> {
+        const view = (await axios.get(this._base + "/kei/hall")).data;
+        const listings: Listing[] = [];
+        (view.listings ?? []).forEach((stall) => {
+            // The hall is not trusted to name an asset. Use its catalogue key
+            // only to find this client's copy of the title; an unknown key is
+            // not something this world can safely offer to buy.
+            const item = this._shop.get(stall.key);
+            if (!item) return;
+            listings.push({
+                hash: stall.hash,
+                seller: stall.seller,
+                key: item.key,
+                title: item.title,
+                qty: stall.qty,
+                price: stall.price,
+                each: stall.each,
+                mine: stall.seller === this.address,
+            });
+        });
+        return { accounts: view.accounts ?? 0, listings, history: view.history ?? {} };
+    }
+
+    /** This wallet's own open listings, read straight off its own chain. */
+    public async myListings(): Promise<Listing[]> {
+        const offers = await this._kei.market.mine({ state: "open" });
+        const listings: Listing[] = [];
+        offers.forEach((offer) => {
+            const listing = this.asListing(offer);
+            if (listing) listings.push(listing);
+        });
+        return listings;
+    }
+
+    /**
+     * List an item for gold.
+     *
+     * `market.offer()`, not `market.sell()`: `sell()` prices in Kei, and this
+     * world's money is gold — an asset it issues. The distinction compiles
+     * either way, which is exactly why it is worth stating.
+     *
+     * Publishing locks the item on this player's own chain (SPEC §9.2), so it
+     * leaves the bag the moment this returns and comes back only if the listing
+     * is cancelled. Nobody else's asset is locked by any of this.
+     */
+    public async list(key: string, price: number, qty: number = 1): Promise<Listing> {
+        const item = this.mustKnow(key);
+        if (!Number.isInteger(price) || price < 1) {
+            throw new Error("Ask a whole number of gold, and at least 1.");
+        }
+        if (!Number.isInteger(qty) || qty < 1) {
+            throw new Error("List a whole number of them, and at least 1.");
+        }
+
+        await this.refresh();
+        const held = this.inventory[key] ?? 0;
+        if (held < qty) {
+            throw new Error(`You have ${held} ${item.title} to list, not ${qty}.`);
+        }
+
+        const offer = await this._kei.market.offer({
+            give: { asset: item.asset, amount: qty },
+            want: { asset: this._coin, amount: price },
+        });
+
+        await this.announce();
+        await this.refresh();
+
+        const listing = this.asListing(offer);
+        if (!listing) {
+            // The offer is on the chain either way — it is this catalogue that
+            // cannot describe it, which means the shop and the chain disagree
+            // about what this world sells. Say that rather than returning
+            // nothing and letting the panel find out.
+            throw new Error(`${item.title} is listed, but this world's catalogue no longer recognises it. Reload the game.`);
+        }
+        return listing;
+    }
+
+    /**
+     * Buy somebody else's listing. One block, both legs or neither (SPEC §9.2).
+     *
+     * The hall is an index rather than an authority, so the offer is read back
+     * off the chain first and refused if it is not the one that was on screen.
+     * The SDK signs the ledger's numbers and not this panel's, so without that
+     * check a listing repriced between the read and the click would simply be
+     * paid.
+     */
+    public async accept(listing: Listing): Promise<void> {
+        if (listing.mine) {
+            throw new Error("That is your own listing. Cancel it to take the item back.");
+        }
+
+        const live = await this._kei.market.get(listing.hash);
+        if (!live || live.state !== "open") {
+            throw new Error(`${listing.title} is gone — somebody else bought it, or the seller took it back.`);
+        }
+        const item = this._shop.get(listing.key);
+        if (!item || !offerMatchesDisplay(live, listing, item.asset, this._coin)) {
+            throw new Error(
+                "That listing does not match the seller, item, quantity, and price that were shown to you. Refresh the hall and look again."
+            );
+        }
+
+        await this._kei.market.accept(live);
+        // Whoever we just traded with is worth reading, and so are we: both
+        // chains can carry the next listing.
+        await this.announce();
+        await this.refresh();
+    }
+
+    /** Take a listing back. Only its author can, because only their asset is locked. */
+    public async cancel(listing: Listing): Promise<void> {
+        await this._kei.market.cancel(listing.hash);
+        await this.refresh();
+    }
+
+    /** Tell the hall this chain is worth reading. Costs nothing and grants nothing. */
+    public async announce(): Promise<void> {
+        try {
+            await axios.post(this._base + "/kei/hall/watch", null, { params: { address: this.address } });
+        } catch (error) {
+            // The hall is an index. Failing to appear in it costs visibility,
+            // never an asset — the listing is on the chain either way.
+        }
+    }
+
+    /** An offer in this world's terms, or nothing if it is not this world's business. */
+    private asListing(offer: Offer): Listing | undefined {
+        const item = this._byAsset.get(offer.give.asset);
+        if (!item || offer.want.asset !== this._coin) return undefined;
+        return {
+            hash: offer.hash,
+            seller: offer.from,
+            key: item.key,
+            title: item.title,
+            qty: offer.give.amount,
+            price: offer.want.amount,
+            each: offer.price,
+            mine: offer.from === this.address,
+        };
     }
 
     public close(): void {
