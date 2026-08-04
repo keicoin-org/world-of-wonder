@@ -28,6 +28,25 @@ export interface Chain {
   mock?: MockNode
 }
 
+/** Chain choices resolved without opening a node or touching persistent state. */
+export interface ChainConfiguration {
+  network: Network
+  nodeUrl?: string
+}
+
+interface Environment {
+  KEI_NETWORK?: string
+  KEI_NODE?: string
+  KEI_GAME_SEED?: string
+}
+
+/** Resolve deployment configuration before constructing anything with effects. */
+export function resolveChainConfiguration(environment: Environment = process.env): ChainConfiguration {
+  const network = resolveNetwork(environment.KEI_NETWORK)
+  const nodeUrl = environment.KEI_NODE?.trim()
+  return { network, ...(nodeUrl ? { nodeUrl } : {}) }
+}
+
 /**
  * `KEI_NETWORK` is `testnet` (the default), `mainnet`, or `mock`.
  * `KEI_NODE` overrides the URL for whichever of those is selected.
@@ -41,13 +60,13 @@ export interface Chain {
  * `mock` remains one variable away, and is the right choice offline or in a test
  * that must not touch the network.
  */
-export async function openChain(): Promise<Chain> {
-  const network = resolveNetwork()
-  const url = process.env.KEI_NODE
+export async function openChain(configuration = resolveChainConfiguration()): Promise<Chain> {
+  const { network, nodeUrl } = configuration
 
-  if (url) {
-    Logger.info(`[kei] ${network} node ${url}`)
-    return { node: url, network }
+  if (nodeUrl) {
+    // Node URLs can contain credentials, so do not copy the value into logs.
+    Logger.info(`[kei] ${network} custom node from KEI_NODE`)
+    return { node: nodeUrl, network }
   }
 
   if (network === 'mock') {
@@ -64,12 +83,12 @@ export async function openChain(): Promise<Chain> {
   return { network }
 }
 
-function resolveNetwork(): Network {
-  const raw = (process.env.KEI_NETWORK ?? '').trim().toLowerCase()
+export function resolveNetwork(configuredNetwork = process.env.KEI_NETWORK): Network {
+  const raw = (configuredNetwork ?? '').trim().toLowerCase()
   if (raw === '') return 'testnet'
   if ((NETWORKS as readonly string[]).includes(raw)) return raw as Network
 
-  throw new Error(`KEI_NETWORK must be one of ${NETWORKS.join(', ')} — got "${process.env.KEI_NETWORK}".`)
+  throw new Error(`KEI_NETWORK must be one of ${NETWORKS.join(', ')}.`)
 }
 
 /** Only testnet hands out Kei. Mainnet has to be funded by a person (SPEC §5.6.5). */
@@ -110,23 +129,71 @@ export function mountNodeRpc(app: any, mock: MockNode): void {
  * The issuer seed is the whole economy: whoever holds it can mint this world's
  * currency without limit. It belongs in the environment and nowhere else.
  *
- * Without one a fresh seed is generated per run. That is fine against a mock,
- * where the ledger is new too, and wrong anywhere else — a new issuer means new
- * asset ids, so every balance and every item from the last run is unreachable.
- * On the default testnet it also re-burns the issuance cost (SPEC §5.6.5) every
- * restart, against a ledger that remembers, so set one before you play twice.
+ * A fresh seed is allowed only for the in-process mock, whose ledger is born and
+ * dies with this process. Public and custom nodes fail closed without a stable
+ * seed because a new issuer means new asset ids and invisible prior property.
  */
-export function resolveIssuerSeed(): string {
-  const seed = process.env.KEI_GAME_SEED
-  if (seed) {
+export interface IssuerSeedOptions {
+  network: Network
+  customNode: boolean
+  configuredSeed?: string
+  /** Injectable so refusal tests can prove entropy was never requested. */
+  generateSeed?: () => string
+}
+
+export function resolveIssuerSeed(options: IssuerSeedOptions): string {
+  const seed = options.configuredSeed
+  if (seed !== undefined && seed !== '') {
     if (!/^[0-9a-fA-F]{64}$/.test(seed)) {
-      throw new Error('KEI_GAME_SEED must be 64 hex characters.')
+      throw new Error(
+        'KEI_GAME_SEED is invalid; it must be exactly 64 hexadecimal characters. The configured value was not logged.',
+      )
     }
     return seed
   }
 
-  Logger.warning('[kei] no KEI_GAME_SEED set — generated one for this run, so every asset id changes on restart')
-  return randomSeed()
+  // A custom KEI_NODE may survive the process even when its network label is
+  // `mock`, so only the MockNode constructed in this process is ephemeral.
+  if (options.network === 'mock' && !options.customNode) {
+    Logger.warning(
+      '[kei] no KEI_GAME_SEED set — generated one for this in-process mock; it and its asset ids die with this process',
+    )
+    return (options.generateSeed ?? randomSeed)()
+  }
+
+  throw new Error(
+    'KEI_GAME_SEED is required before opening a public or custom node. Changing this seed changes every asset ID and makes prior player property invisible to this world. Generate a stable 32-byte seed with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"',
+  )
+}
+
+export interface StartupChain {
+  chain: Chain
+  seed: string
+}
+
+export interface OpenStartupChainOptions {
+  environment?: Environment
+  generateSeed?: () => string
+  /** Injectable so tests can prove refusal happens before any node call. */
+  open?: (configuration: ChainConfiguration) => Promise<Chain>
+}
+
+/**
+ * Fail-closed startup boundary. The caller invokes this before its database,
+ * faucet, issuer, or listeners, and this function validates the seed before it
+ * opens the node.
+ */
+export async function openStartupChain(options: OpenStartupChainOptions = {}): Promise<StartupChain> {
+  const environment = options.environment ?? process.env
+  const configuration = resolveChainConfiguration(environment)
+  const seed = resolveIssuerSeed({
+    network: configuration.network,
+    customNode: configuration.nodeUrl !== undefined,
+    configuredSeed: environment.KEI_GAME_SEED,
+    ...(options.generateSeed ? { generateSeed: options.generateSeed } : {}),
+  })
+  const chain = await (options.open ?? openChain)(configuration)
+  return { chain, seed }
 }
 
 function randomSeed(): string {
