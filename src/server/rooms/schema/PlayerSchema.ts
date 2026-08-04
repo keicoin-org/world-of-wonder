@@ -9,17 +9,30 @@ import { NavMesh, Vector3 } from "../../../shared/Libs/yuka-min";
 import { InventorySchema, EquipmentSchema, AbilitySchema, LootSchema, BrainSchema, QuestSchema, HotbarSchema } from "../schema";
 import { GameRoomState } from "../state/GameRoomState";
 import { Entity } from "../schema/Entity";
-import { EntityState, ItemClass, CalculationTypes } from "../../../shared/types";
-import { nanoid } from "nanoid";
+import { EntityState, ItemClass, CalculationTypes, ServerMsg } from "../../../shared/types";
 import { Database } from "../../Database";
 import Logger from "../../utils/Logger";
+import { EMPTY_LEGACY, type LegacyRecord } from "../../kei/Legacy";
+import { NO_AUTHORITY_REASON, inventoryAuthority } from "../../kei/Inventory";
 
 export class PlayerData extends Schema {
+    /**
+     * The working set of items this session has been authorized to act on.
+     *
+     * It is not the bag. The bag is `wallet.inventory` in the browser, read off
+     * the chain, and it is the only place a player's items exist. What belongs
+     * here is the subset a proven wallet was checked against so the room can
+     * equip or consume it — which is nothing today, because nothing can prove a
+     * wallet yet (`kei/Inventory.ts`). The database no longer fills it.
+     */
     @type({ map: InventorySchema }) inventory = new MapSchema<InventorySchema>();
     @type({ map: AbilitySchema }) abilities = new MapSchema<AbilitySchema>();
     @type({ map: QuestSchema }) quests = new MapSchema<QuestSchema>();
     @type({ map: HotbarSchema }) hotbar = new MapSchema<HotbarSchema>();
-    @type("uint32") public gold: number = 0;
+    // `gold` was here, a uint32 the room added to and the database saved. It is
+    // gone rather than zeroed: the purse is `balanceOf` on the chain and the
+    // client reads it there, so a second number on the wire could only ever
+    // disagree with it (issue #6).
     @type("uint8") public strength: number = 0;
     @type("uint8") public endurance: number = 0;
     @type("uint8") public agility: number = 0;
@@ -108,6 +121,9 @@ export class PlayerSchema extends Entity {
 
     // inventory
     public INVENTORY_LENGTH = 25;
+
+    /** What the old tables still hold for this character. Never acted on. */
+    public legacy: LegacyRecord = EMPTY_LEGACY;
 
     constructor(state: GameRoomState, data) {
         super();
@@ -226,14 +242,17 @@ export class PlayerSchema extends Entity {
         // update character
         db.updateCharacter(client.auth.id, this);
 
-        // update player items
-        db.saveItems(character.id, this.player_data.inventory);
+        // `saveItems()` and `saveEquipment()` used to be called here, and are
+        // deliberately not any more. Both delete every row a character has and
+        // re-insert what the room is holding, so calling them from a session that
+        // starts with an empty bag would erase `character_inventory` and
+        // `character_equipment` on the first autosave — turning a boundary that
+        // ignores those rows into one that destroys them. They are preserved
+        // untouched instead, for a migration that can prove who to give them to
+        // (issue #6, `kei/Legacy.ts`).
 
         // update player abilities
         db.saveAbilities(character.id, this.player_data.abilities);
-
-        // update player equipment
-        db.saveEquipment(character.id, this.equipment);
 
         // update player quests
         db.saveQuests(character.id, this.player_data.quests);
@@ -291,18 +310,6 @@ export class PlayerSchema extends Entity {
         return this.player_data.inventory.get("" + value);
     }
 
-    findNextAvailableInventorySlot(): string | boolean {
-        if (this.player_data.inventory.size > 0) {
-            for (let i = 0; i < this._state.config.PLAYER_INVENTORY_SPACE; i++) {
-                if (!this.player_data.inventory.get("" + i)) {
-                    return "" + i;
-                }
-            }
-            return false;
-        }
-        return "" + 0;
-    }
-
     isEquipementSlotAvailable(slot) {
         let available = true;
         this.equipment.forEach((item) => {
@@ -322,30 +329,21 @@ export class PlayerSchema extends Entity {
         }
     }
 
-    increaseItemQuantity(inventoryItem, amount = 1) {
-        inventoryItem.qty += amount;
-    }
-
-    dropItem(inventoryItem, dropAll = false) {
-        let newQuantity = dropAll ? inventoryItem.qty : inventoryItem.qty - 1;
-        let data = {
-            key: inventoryItem.key,
-            sessionId: nanoid(10),
-            x: this.x,
-            y: this.y,
-            z: this.z,
-            qty: newQuantity,
-        };
-        let entity = new LootSchema(this._state, data);
-        this._state.entityCTRL.add(entity);
-
-        if (dropAll) {
-            this.player_data.inventory.delete("" + inventoryItem.i);
-        } else {
-            inventoryItem.qty -= 1;
-        }
-
-        console.log("dropItem", dropAll, newQuantity, inventoryItem.qty);
+    /**
+     * Put something on the ground, which this slice will not do.
+     *
+     * Dropping used to be "remove the row, add a loot entity", and both halves
+     * were the server's to decide. Now the ground is a place the server mints
+     * from — `pickupItem()` pays whoever walks into it — while the item itself
+     * never left the dropper's wallet, so the old body would have made one unit
+     * into two. Doing it properly means the player signing the item away, which
+     * is a wallet action and not a room message.
+     */
+    dropItem() {
+        this.say(
+            "Dropping an item is not built yet: it lives in your wallet, so the room cannot put it on the ground without making a second one. Sell it to the vendor or list it in the auction house.",
+        );
+        return false;
     }
 
     // buyItem() and sellItem() lived here and were the whole economy: an item
@@ -353,47 +351,70 @@ export class PlayerSchema extends Entity {
     // arithmetic. Both are on the chain now (src/server/kei/Economy.ts), where
     // the player signs for their own side and this server cannot.
 
+    /**
+     * Take something off the ground, which is now a mint rather than a row.
+     *
+     * The loot entity was authored by this server — a mob's drop table, or a
+     * quest reward — so paying for it is a legitimate thing for the server to
+     * sign (SPEC §8). What it cannot do is decide whose wallet to pay, so a
+     * character with no proven address picks nothing up and the loot stays where
+     * it is. The old body added an `InventorySchema` to `player_data.inventory`
+     * and that was the whole of "you own this" (issue #6).
+     */
     pickupItem(loot: LootSchema) {
         // play animation // disabled
         //this.animationCTRL.playAnim(this, EntityState.PICKUP, () => {});
 
-        let availableSlot = this.findNextAvailableInventorySlot();
-
-        if (!availableSlot) {
-            console.error("PICK UP", loot.key, "QTY: " + loot.qty, "INVENTORY IS FULL (" + availableSlot + ")");
+        const authority = inventoryAuthority();
+        if (!authority) {
+            this.say(NO_AUTHORITY_REASON);
             return false;
         }
 
-        let data = {
-            key: loot.key,
-            qty: loot.qty,
-            i: "" + availableSlot,
-        };
-
-        console.log("PICK UP", loot.key, "QTY: " + loot.qty, "SLOT: " + availableSlot);
-
-        //
-        let item = this._state.gameData.get("item", loot.key);
-
-        // is item already inventory
-        let inventoryItem = this.getInventoryItem(loot.key, "key");
-
-        // is item stackable
-        if (item.stackable && inventoryItem) {
-            // increnent quantity
-            this.increaseItemQuantity(inventoryItem, data.qty);
-        } else {
-            // add inventory item
-            this.player_data.inventory.set("" + data.i, new InventorySchema(data));
+        // Checked before the entity is removed, and synchronously, so a refusal
+        // cannot lose the drop. Whether there is a bound wallet is a local fact;
+        // only what it holds needs the chain.
+        if (!authority.addressOf(this.id)) {
+            this.say(`You cannot pick up ${loot.key.replace(/_/g, " ")} yet. ` + NO_AUTHORITY_REASON);
+            return false;
         }
 
-        // delete loot
+        // The loot's own id is the idempotency key: one entity, one payment,
+        // however many times two clients race to walk into it.
+        const reward = { id: `loot:${loot.sessionId}`, items: [{ key: loot.key, qty: loot.qty }] };
+
         if (this._state.entities.get(loot.sessionId)) {
             this._state.entities.delete(loot.sessionId);
         }
 
+        void authority
+            .pay(this.id, reward)
+            .then((result) => {
+                if ("paid" in result) {
+                    this.say(`Picked up ${loot.qty} × ${loot.key.replace(/_/g, " ")}. It is on the chain now.`);
+                } else {
+                    Logger.warning(`[pickupItem] ${loot.key} refused: ${result.code}`);
+                    this.say(result.reason);
+                }
+            })
+            // Detached, so an unhandled rejection would take the process down.
+            // The entity is already gone by here, so a failed mint loses the
+            // drop — which is the safe direction, and the reason the reward id
+            // is the entity's: a retry later would still pay exactly once.
+            .catch((error) => {
+                Logger.error(`[pickupItem] paying for ${loot.key} failed`, error);
+                this.say("That could not be picked up just now. Nothing was minted.");
+            });
+
         // stop chasing target
         this.AI_TARGET = null;
+    }
+
+    /** One line to the player who caused this, in the chat notifications. */
+    public say(message: string) {
+        const client = this.getClient();
+        if (!client) return;
+        client.send(ServerMsg.SERVER_MESSAGE, { type: "event", message, date: new Date() });
     }
 
     consumeItem(item) {
@@ -441,27 +462,31 @@ export class PlayerSchema extends Entity {
         }
     }
 
+    /**
+     * Take something off.
+     *
+     * Two changes from upstream, both because equipment is now a reference to an
+     * asset rather than the asset itself.
+     *
+     * It refuses when the player is not wearing the thing. `PLAYER_UNEQUIP_ITEM`
+     * carries an item key and the handler only checked that the key exists in the
+     * game data, so unequipping something you never had was a message anybody
+     * could send — and the old body ended by putting a fresh copy of it in the
+     * bag. That was a way to ask the server for an item.
+     *
+     * And nothing is created by taking something off. The unit is in the player's
+     * wallet the whole time it is worn; this map is only the room's note of which
+     * one is in which slot, so removing the note moves nothing.
+     */
     unequipItem(key, slot) {
-        let availableSlot = this.findNextAvailableInventorySlot();
-
-        if (!availableSlot) {
-            console.error("UNEQUIP ITEM", key, "SLOT: " + slot, "INVENTORY IS FULL (" + availableSlot + ")");
+        if (!this.equipment.get(key)) {
             return false;
         }
 
         // remove item from equipment
         this.equipment.delete(key);
 
-        //
         this.statsCTRL.unequipItem(this._state.gameData.get("item", key));
-
-        // equip
-        this.pickupItem(
-            new LootSchema(this._state, {
-                key: key,
-                qty: 1,
-            })
-        );
     }
 
     canEquip(item, slot) {

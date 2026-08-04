@@ -109,3 +109,31 @@ CREATE TABLE IF NOT EXISTS `character_hotbar` (
 );
 ALTER TABLE `character_hotbar` ADD PRIMARY KEY (`id`);
 ALTER TABLE `character_hotbar` MODIFY `id` int(10) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=1;
+
+--
+-- REWARD PAYMENTS
+--
+-- Not dropped on startup, unlike everything above it. This is the record of
+-- which server-authored rewards have already been minted on the chain, and a
+-- restart that forgot it would pay every one of them a second time. It holds no
+-- balance and authorizes nothing; the chain is still the only ledger.
+--
+-- Known limitation on this adapter, and only this one. Every table above is
+-- dropped and recreated on each boot, so `characters.id` restarts at 1 while
+-- these rows survive — and a reward id names a character by that id. A fresh
+-- character can therefore inherit a previous incarnation's paid quests and go
+-- unpaid for them. That is the direction this design errs in on purpose: a
+-- stale row under-pays, and dropping the table would over-mint. The real fix is
+-- a stable per-character identity, which arrives with wallet binding (issue #6).
+-- SQLite, which is what the tests and the default deployment use, keeps its
+-- characters across restarts and is unaffected.
+
+CREATE TABLE IF NOT EXISTS `reward_payments` (
+	`id`			varchar(255) NOT NULL,
+	`owner_id`		int(10),
+	`address`		varchar(255),
+	`gold`			int(10),
+	`items`			varchar(255),
+	`paid_at`		bigint,
+	PRIMARY KEY (`id`)
+);

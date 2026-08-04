@@ -1,7 +1,9 @@
 import { Leveling } from "../../../shared/Class/Leveling";
 import { Quest, QuestObjective, QuestStatus, QuestUpdate, ServerMsg } from "../../../shared/types";
-import { BrainSchema, LootSchema, PlayerSchema, QuestSchema } from "../schema";
+import { BrainSchema, PlayerSchema, QuestSchema } from "../schema";
 import { GameRoomState } from "../state/GameRoomState";
+import { inventoryAuthority } from "../../kei/Inventory";
+import Logger from "../../utils/Logger";
 
 export class dynamicCTRL {
     private _state: GameRoomState;
@@ -106,22 +108,42 @@ export class dynamicCTRL {
                 Leveling.addExperience(this._player, experienceReward);
             }
 
-            // gold
-            let goldReward = quest.rewards.gold ?? 0;
-            if (goldReward) {
-                this._player.player_data.gold += goldReward;
+            // Marked complete before the payment is attempted, and marked from
+            // the quest the server looked up rather than from `data`. What a
+            // client sends is a key and a status; the rewards, the quantities and
+            // the account they are paid to all come from this side. The character
+            // and quest key are the idempotency key, so completing it twice —
+            // across a reconnect, a restart, or two messages in the same tick —
+            // pays once (issue #6).
+            playerQuest.status = 1;
+
+            const gold = quest.rewards.gold ?? 0;
+            const items = (quest.rewards.items ?? []).map((item: any) => ({ key: item.key, qty: item.qty ?? 1 }));
+            if (gold === 0 && items.length === 0) {
+                return;
             }
 
-            // add items
-            let items = quest.rewards.items ?? [];
-            items.forEach((item) => {
-                this._player.pickupItem(new LootSchema(this._state, item));
-            });
+            const authority = inventoryAuthority();
+            if (!authority) {
+                return;
+            }
 
-            // remove quest as it is completed
-            // later on we will save a history, not necessary yet..
-            //this._player.player_data.quests.delete(quest.key);
-            playerQuest.status = 1;
+            void authority
+                .pay(this._player.id, { id: `quest:${this._player.id}:${quest.key}`, gold, items })
+                .then((result) => {
+                    if ("paid" in result) {
+                        this._player.say(`${quest.title ?? quest.key} paid out. It is on the chain now.`);
+                    } else if (result.code !== "already-paid") {
+                        this._player.say(`${quest.title ?? quest.key} could not pay out. ${result.reason}`);
+                    }
+                })
+                // Detached, so an unhandled rejection here would end the process
+                // rather than the quest. The quest stays marked complete and
+                // unpaid, which is the direction this file errs in deliberately.
+                .catch((error) => {
+                    Logger.error(`[dynamicCTRL] paying quest ${quest.key} failed`, error);
+                    this._player.say(`${quest.title ?? quest.key} could not pay out. Nothing was minted.`);
+                });
         }
     }
 }

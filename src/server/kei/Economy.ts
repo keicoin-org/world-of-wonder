@@ -98,6 +98,14 @@ export interface Economy {
   // name.
   /** Starting gold for a character that has never played. */
   grant(address: string, amount: number): Promise<void>
+  /**
+   * Mint an item the server authored — loot, a quest reward — to an address.
+   *
+   * The same power as `grant` and the same rule: there is no route to it, and
+   * the only caller is `Inventory.ts`, which will not call it for a quantity a
+   * client asked for or for an address a client merely claimed.
+   */
+  deliver(address: string, key: string, qty: number): Promise<void>
   close(): void
 }
 
@@ -310,6 +318,12 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
 
     async grant(address, amount) {
       await gold.mint(address, amount)
+    },
+
+    async deliver(address, key, qty) {
+      const token = itemTokens.get(key)
+      if (!token) throw new Error(`This world does not issue "${key}".`)
+      await token.mint(address, qty)
     },
 
     close() {

@@ -12,6 +12,7 @@ import { NavMesh, Vector3 } from "../../../shared/Libs/yuka-min";
 import Logger from "../../utils/Logger";
 import { ItemClass, ServerMsg, Speed } from "../../../shared/types";
 import { Config } from "../../../shared/Config";
+import { describeLegacy, isEmptyLegacy, quarantineLegacy } from "../../kei/Legacy";
 
 export class GameRoomState extends Schema {
     // networked variables
@@ -101,6 +102,12 @@ export class GameRoomState extends Schema {
         // prepare player data
         let data = client.auth;
 
+        // What the old tables still claim this character owns. It is read here so
+        // the player can be told about it, and then it goes no further: gold,
+        // inventory and equipment are not loaded into the room at all, because a
+        // row this server can edit is not ownership (issue #6, `kei/Legacy.ts`).
+        const legacy = quarantineLegacy(data);
+
         let player_data = {
             strength: data.strength ?? 0,
             endurance: data.endurance ?? 0,
@@ -108,7 +115,6 @@ export class GameRoomState extends Schema {
             intelligence: data.intelligence ?? 0,
             wisdom: data.wisdom ?? 0,
             experience: data.experience ?? 0,
-            gold: data.gold ?? 0,
             points: data.points ?? 0,
         };
 
@@ -139,16 +145,31 @@ export class GameRoomState extends Schema {
 
             initial_player_data: player_data,
             initial_abilities: data.abilities ?? [],
-            initial_inventory: data.inventory ?? [],
-            initial_equipment: data.equipment ?? [],
+            // Empty, and not from `data`. The bag and what is worn are both
+            // references to assets the chain has to agree the player holds, and
+            // nothing can prove which wallet is theirs yet, so a session starts
+            // owning nothing here rather than owning whatever SQLite said.
+            initial_inventory: [],
+            initial_equipment: [],
             initial_quests: data.quests ?? [],
             initial_hotbar: data.hotbar ?? [],
+            legacy,
         };
 
         this.entityCTRL.add(new PlayerSchema(this, player));
 
         // set player as online
         this._gameroom.database.toggleOnlineStatus(client.auth.id, 1);
+
+        // Say what happened to the starter potions, once. A player who is told
+        // nothing would reasonably conclude the server had eaten them.
+        if (!isEmptyLegacy(legacy)) {
+            client.send(ServerMsg.SERVER_MESSAGE, {
+                type: "event",
+                message: describeLegacy(legacy),
+                date: new Date(),
+            });
+        }
 
         // log
         Logger.info(`[gameroom][onJoin] player ${client.sessionId} joined room ${this._gameroom.roomId}.`);
@@ -239,13 +260,11 @@ export class GameRoomState extends Schema {
             }
         }
 
+        // The slot index this used to carry is gone with the bag it indexed into.
+        // `dropItem()` says why rather than doing nothing, because a message that
+        // is quietly ignored looks like a dropped packet.
         if (type === ServerMsg.PLAYER_DROP_ITEM) {
-            let slot = data.slot;
-            let dropAll = data.drop_all ?? false;
-            const item = playerState.getInventoryItemByIndex(slot);
-            if (item) {
-                playerState.dropItem(item, dropAll);
-            }
+            playerState.dropItem();
         }
 
         // PLAYER_BUY_ITEM and PLAYER_SELL_ITEM used to be handled here, and are
@@ -256,7 +275,12 @@ export class GameRoomState extends Schema {
 
         /////////////////////////////////////
         // on player equip
-        // data will equal the inventory index of the clicked item
+        //
+        // `data.index` is a slot in `player_data.inventory`, which is now the set
+        // of items a proven wallet was checked against rather than a copy of
+        // `character_inventory` — so it is empty, and this resolves to nothing.
+        // The index is the part that has to change: what the wallet holds is
+        // keyed by item, and a slot number is a database row's shape (issue #6).
         if (type === ServerMsg.PLAYER_USE_ITEM) {
             const index = data.index;
             const item = playerState.getInventoryItemByIndex(index);
@@ -266,6 +290,10 @@ export class GameRoomState extends Schema {
                 } else if (item.equippable) {
                     playerState.equipItem(item);
                 }
+            } else {
+                playerState.say(
+                    "Equipping and using items off the chain is not built yet. What you own is in the bag and can be sold to the vendor or listed in the auction house."
+                );
             }
         }
 

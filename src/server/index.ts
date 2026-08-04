@@ -15,6 +15,7 @@ import { Database } from "./Database";
 import { startEconomy, type Economy } from "./kei/Economy";
 import { mountEconomyApi } from "./kei/api";
 import { mountNodeRpc, openStartupChain } from "./kei/node";
+import { openInventoryAuthority, proofUnavailable, useInventoryAuthority } from "./kei/Inventory";
 
 import Logger from "./utils/Logger";
 import { Config } from "../shared/Config";
@@ -60,6 +61,29 @@ class GameServer {
             // SPEC §8: the game must be playable with payments switched off.
             exchange: process.env.KEI_EXCHANGE !== "off",
         });
+
+        // The room's half of the economy: the one place gameplay is allowed to
+        // ask whether a player owns something, and the reason it stops asking
+        // SQLite (issue #6).
+        //
+        // `proofUnavailable` is the whole shape of what is left to do. Until a
+        // character can be bound to an address by a signature this server can
+        // check, every authorization below refuses, loot and quest rewards go
+        // unpaid rather than into a database, and the old tables sit untouched.
+        // That is the safety mode, and it is deliberately the loud kind.
+        useInventoryAuthority(
+            openInventoryAuthority({
+                economy: this.economy,
+                verify: proofUnavailable,
+                payments: {
+                    paid: (id) => this.database.hasPaidReward(id),
+                    record: (entry) => this.database.recordRewardPayment(entry),
+                },
+            })
+        );
+        Logger.warning(
+            "[kei] wallet-session proof is not built yet, so no character is bound to an address: loot, quest rewards and pickups are refused rather than written to the database (issue #6)"
+        );
 
         //////////////////////////////////////////////////
         ///////////// COLYSEUS GAME SERVER ///////////////
