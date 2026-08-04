@@ -14,7 +14,7 @@ import { Database } from "./Database";
 
 import { startEconomy, type Economy } from "./kei/Economy";
 import { mountEconomyApi } from "./kei/api";
-import { openChain, mountNodeRpc, resolveIssuerSeed } from "./kei/node";
+import { mountNodeRpc, openStartupChain } from "./kei/node";
 
 import Logger from "./utils/Logger";
 import { Config } from "../shared/Config";
@@ -37,6 +37,10 @@ class GameServer {
     }
 
     async init() {
+        // Validate identity before the database, node, faucet, issuer, or any
+        // listeners are opened. A process restart must not replace the economy.
+        const { chain, seed } = await openStartupChain();
+
         // start db
         //
         // Still here, and deliberately so: it holds accounts, characters, and
@@ -49,9 +53,8 @@ class GameServer {
         await this.database.create();
 
         // start the economy
-        const chain = await openChain();
         this.economy = await startEconomy({
-            seed: resolveIssuerSeed(),
+            seed,
             ...(chain.node === undefined ? {} : { node: chain.node }),
             network: chain.network,
             // SPEC §8: the game must be playable with payments switched off.

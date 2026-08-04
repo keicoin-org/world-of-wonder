@@ -109,6 +109,17 @@ check('a sale pays the quoted price', (await gold.balance()) === purse + sword.b
 const afterSale = await economy.inventoryOf(player.address)
 check('and the sword is no longer the player\'s', (afterSale['sword_01'] ?? 0) === 0, `${afterSale['sword_01'] ?? 0}`)
 
+// A server lifetime ends while its ledger does not. Reopening the same economy
+// with the stable issuer must recognize exactly the same asset family.
+const firstLifetime = economy.catalogue()
 economy.close()
+const restarted = await startEconomy({ seed: ISSUER_SEED, node, network: 'mock' })
+const secondLifetime = restarted.catalogue()
+const firstSword = firstLifetime.items.find((item) => item.key === 'sword_01')!
+const secondSword = secondLifetime.items.find((item) => item.key === 'sword_01')!
+check('issuer is stable across economy lifetimes', secondLifetime.issuer === firstLifetime.issuer)
+check('gold asset is stable across economy lifetimes', secondLifetime.coin.asset === firstLifetime.coin.asset)
+check('item asset is stable across economy lifetimes', secondSword.asset === firstSword.asset)
+restarted.close()
 console.log(failures === 0 ? '\nall good\n' : `\n${failures} failed\n`)
 process.exit(failures === 0 ? 0 : 1)

@@ -243,9 +243,9 @@ working directory, so start it from the project root:
 
 | Variable | |
 |---|---|
-| `KEI_GAME_SEED` | 64 hex characters. **This is the economy** — whoever holds it can mint this world's currency without limit. Without one a seed is generated per run, so every asset id changes on restart. |
+| `KEI_GAME_SEED` | 64 hex characters. **This is the economy** — whoever holds it can mint this world's currency without limit. Required for the default testnet, mainnet, and every custom `KEI_NODE`; startup fails before database or chain access when it is absent or invalid. Only the in-process mock may generate an ephemeral seed. Generate one with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`, store it as a secret, and restore the same value after every restart. |
 | `KEI_NETWORK` | `testnet` (default), `mainnet`, or `mock`. Mainnet is not open and has no faucet, so it stops with an explanation rather than settling elsewhere. |
-| `KEI_NODE` | A node URL, overriding the public one for `KEI_NETWORK`. Unset is the normal case. |
+| `KEI_NODE` | A node URL, overriding the public one for `KEI_NETWORK`. Unset is the normal case. A custom node is treated as persistent and requires `KEI_GAME_SEED`, including when labelled `mock`. |
 | `KEI_EXCHANGE` | `off` disables paying Kei for gold. SPEC §8 requires the game to be playable with payments off. |
 | `NODE_ENV` | `production` closes `/kei/grant`, never loads the Colyseus monitor, and turns off the latency simulation. |
 | `DATABASE_PATH` | Where sqlite keeps accounts and characters. Defaults to `./database.db`. |
