@@ -66,7 +66,11 @@ export class TrainerDialog {
         if (ability.required_level && ability.required_level > this.panel._currentPlayer.level) {
             canLearn = false;
         }
-        if (ability.value && ability.value > playerData.gold) {
+        // The purse is the chain's, the same one the vendor and the bag read.
+        // `player_data.gold` used to be checked here and no longer exists; a
+        // number the room sent could only have disagreed with `balanceOf`.
+        const purse = this.panel._game.wallet ? this.panel._game.wallet.gold : 0;
+        if (ability.value && ability.value > purse) {
             canLearn = false;
         }
         return canLearn;

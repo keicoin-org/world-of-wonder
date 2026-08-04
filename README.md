@@ -56,11 +56,55 @@ promise about your intentions, not a fact about the world.
 | The vendor panel | Sends a room message | Signs with the player's wallet, and reads the purse off the chain |
 | The bag panel | Reads `PlayerSchema.inventory` | Refreshes the player's on-chain item balances and purse |
 | Player-to-player trade | Nothing upstream | An auction house. A listing is a block on the seller's own chain and a sale is one block that moves both legs |
+| Loot and quest rewards | `player_data.gold += n`, a row in `character_inventory` | A mint the issuer signs, to a wallet the player has proved is theirs — and refused until they have |
 
 The database is still there, and deliberately: it holds accounts, characters, and
 where they were standing. Colyseus is still authoritative over presence and
 position. Neither is authoritative over money, which is the whole point
 (SPEC §8).
+
+### There is one inventory, and the room is not allowed to invent a second
+
+The last row of that table is the newest and the least finished, so read this
+before you build on it.
+
+Until recently the fork had two of everything. The bag a player saw was the
+chain's, and the bag the room used was `character_inventory` — loaded on join,
+awarded by mobs and quests, equipped, consumed, and saved back. A new character
+got starter potions the bag never showed, a sword bought from the vendor could
+not be equipped, and anybody with `sqlite3` and the database file could give
+themselves a weapon (issue #6).
+
+`src/server/kei/Inventory.ts` is the one place gameplay may now ask whether a
+player owns something, and it asks `holdings` — never a table. That answer is
+gated on a character being bound to an address by a signature this server can
+check, and **there is no way to check one yet**, so today it refuses everything:
+
+- a character joins owning nothing, and is told once that the old rows exist and
+  are not usable;
+- a kill or a completed quest pays no gold and no items, and says so in the chat
+  rather than silently writing to SQLite;
+- an item on the ground stays on the ground;
+- `character_inventory`, `character_equipment`, and the `gold` column keep
+  whatever they already held. They are still selected on join, but only so the
+  player can be counted the rows and told they are inert — nothing is written
+  back, nothing reaches gameplay, and nothing is minted into anybody's wallet. A
+  migration that hands them out needs to know whose wallet to hand them to.
+
+That is a safety mode and not the finished migration. What it buys is that the
+two economies can no longer disagree, because there is only one: everything a
+player owns is on the chain, and the shop and the auction house still work
+normally. What it costs is loot, quest payouts, and equipping, all of which are
+refused rather than faked.
+
+When the binding exists, the same service pays out. It is written and tested
+against a `MockNode` already — `npm run test:inventory` binds a character with a
+stub verifier, mints a sword, lists it in the auction house and watches it stop
+authorizing anything, pays a kill once across a replay and again across a second
+authority built fresh on the same records, and checks that a row somebody
+inserted by hand never authorizes anything at all. What it does not do is
+restart the process: the record of what was already minted is in SQLite, so the
+test stands a new authority up against it rather than proving a reboot.
 
 ### Buying takes two signatures
 
@@ -142,10 +186,13 @@ mint the currency being traded.
 
 ```
 src/server/kei/Economy.ts       the issuer: gold, items, the shop. Read this one.
+src/server/kei/Inventory.ts     what the room is allowed to ask about ownership, and what it is refused
+src/server/kei/Legacy.ts        the old database bag, kept and never acted on
 src/server/kei/Hall.ts          the auction house's list of chains to read. It signs nothing.
 src/server/kei/api.ts           the HTTP surface. Nothing here can move a player's money.
 src/server/kei/node.ts          which chain, and which account issues the money
 src/server/kei/Economy.test.ts  the rules, against a chain in-process
+src/server/kei/Inventory.test.ts the boundary: a SQLite row owns nothing, and a reward pays once
 src/server/kei/Market.test.ts   two players trading, with this server on neither leg
 src/server/kei/endtoend.test.ts the same things across a URL, the way a browser does it
 src/client/Controllers/Wallet.ts  the player's key, and the only thing that spends their gold
@@ -157,10 +204,14 @@ src/client/Utils/index.ts       where the client looks for the server
 ## Tests
 
 ```sh
-npm run test            # test:economy and test:market, both in-process
+npm run test            # test:startup, test:economy, test:market, test:inventory — all in-process
 npm run server-start &
 npm run test:e2e        # the same things over HTTP, sharing no memory with the server
 ```
+
+`test:inventory` is the one that owns the boundary above. It runs against a
+`MockNode` and a temporary SQLite file, so it is deterministic and touches no
+network.
 
 `test:e2e` is the one worth trusting. It signs its own transfers against `/rpc`
 and waits for the item to arrive, so passing it means a hosted client can work
@@ -273,13 +324,49 @@ variable. A host that assigns you a port expects that file to be edited.
   timer runs out" cannot be a consensus rule. It would have to be somebody's
   wall clock, and the somebody would be this server — which is the shape the
   rest of the file exists to avoid.
-- **Equipping, loot and quest rewards still use upstream inventory state.** The
-  bag and vendor now show the chain's item balances and purse, so anything bought
-  or sold appears consistently in both. Gameplay rewards and equipped gear have
-  not moved yet; they are deliberately not merged into the bag because that would
-  make database rows look like on-chain ownership. Moving those producers and
-  consumers across is the next slice.
-- **The trainer still spends `player_data.gold`**, which is no longer money.
+- **Wallet-session proof, and everything downstream of it.** A character cannot
+  be bound to an address, so `src/server/kei/Inventory.ts` ships with
+  `proofUnavailable` and refuses every authorization. Concretely, and in the
+  order they unblock:
+
+  1. **A challenge-signing helper in the SDK.** The wallet in the browser can
+     sign blocks and nothing else; there is no call that signs a
+     domain-separated string. Writing one in this repository would mean handling
+     a player's raw key in server-facing application code, which SPEC §6.3
+     forbids, so it belongs in `kei-transaction` and is coordinated with Button
+     issue #10. The server half — issue the challenge, consume it once, check
+     the signature — is a `ProofVerifier` parameter waiting for a function.
+  2. **Loot, quest payouts, and pickups start paying.** These are already
+     written and tested; they refuse only because step 1 has not happened.
+     This is not a backlog: a quest completed while proof is unavailable stays
+     complete and permanently unpaid. Payment ids prevent duplicate minting;
+     they do not provide eventual delivery or retroactive payout, which needs a
+     separate durable retry/backfill design before wallet binding ships.
+  3. **Equipping and consuming a chain-owned item.** The room needs to load a
+     proven wallet's holdings into `player_data.inventory` on join and
+     revalidate before each use, and `PLAYER_USE_ITEM` needs to take an item key
+     the wallet is checked against rather than a database slot index. Selling an
+     equipped item from another tab already stops authorizing anything — a
+     listed item leaves its owner's spendable balance — but nothing unequips it
+     yet.
+  4. **Dropping.** Refused outright today. The item is in the player's wallet,
+     so putting it on the ground where `pickupItem()` mints from would make one
+     unit into two. It has to be the player signing the item away.
+  5. **The old rows.** `character_inventory`, `character_equipment`, and the
+     `gold` column are preserved and inert. Handing them out needs a bound
+     address, an audit record, and an idempotency key — or a decision that
+     development inventory is non-transferable and gets reset. Until then
+     nothing reads them and nothing writes them.
+
+  One thing the safety mode does not cover: a wallet bound to two characters at
+  once would let both act on the same holding, because consuming an item is a
+  room action rather than a transfer. That check belongs with step 3.
+
+- **The trainer teaches nothing.** Upstream's `PLAYER_LEARN_SKILL` handler is
+  commented out, and it still is, so training has never charged anybody. What
+  changed is that the panel prices against the chain purse instead of
+  `player_data.gold`, which no longer exists — the button is honest about what
+  you can afford and still does nothing when you press it.
 - **`construction/`** — 757MB of `.blend` and `.afdesign` art *source*, against
   28MB for the whole runtime game. Get it from
   [upstream](https://github.com/orion3dgames/t5c) if you need to edit the models.

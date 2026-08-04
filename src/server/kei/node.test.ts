@@ -6,6 +6,7 @@
  */
 
 import { openStartupChain, type Chain, type ChainConfiguration } from './node'
+import { DB_MYSQL } from '../utils/database/mysql'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
@@ -153,6 +154,45 @@ check('real server exits nonzero without a persistent-network seed', started.sta
 check('real server emits the actionable refusal', diagnostic.includes('KEI_GAME_SEED is required'))
 check('real server refuses before creating its SQLite database', !existsSync(resolve(workingDirectory, 'database.db')))
 rmSync(workingDirectory, { recursive: true, force: true })
+
+// The MySQL adapter builds its schema by splitting database/mysql.sql on `;` and
+// executing every fragment, so a semicolon anywhere in that file — including
+// prose inside a `--` comment — becomes a statement boundary, and the statement
+// that follows it is swallowed into a fragment that cannot parse. Drive the real
+// createDatabase() over the real file with a connection that only records: no
+// MySQL server needed, but the splitter and the schema are both the live ones.
+const issued: string[] = []
+const adapter = new DB_MYSQL()
+adapter.db = {
+    async query(sql: string) {
+        issued.push(sql)
+        return [[]]
+    },
+}
+await adapter.createDatabase()
+
+const statementOf = (fragment: string): string =>
+    fragment
+        .split('\n')
+        .filter((line) => !/^\s*--/.test(line))
+        .join('\n')
+        .replace(/;\s*$/, '')
+        .trim()
+
+const unrunnable = issued.filter((fragment) => {
+    const statement = statementOf(fragment)
+    return statement === '' || !/^(DROP|CREATE|ALTER|INSERT|SET|USE)\b/i.test(statement)
+})
+check(
+    'every mysql.sql fragment the adapter executes is a statement',
+    unrunnable.length === 0,
+    unrunnable.map((fragment) => JSON.stringify(statementOf(fragment).slice(0, 60))).join(' | ')
+)
+check(
+    'the reward ledger survives the split it is documented in',
+    issued.some((fragment) => /^CREATE TABLE IF NOT EXISTS `reward_payments`/i.test(statementOf(fragment))),
+    `${issued.length} fragments`
+)
 
 console.log(failures === 0 ? '\nall good\n' : `\n${failures} failed\n`)
 process.exit(failures === 0 ? 0 : 1)

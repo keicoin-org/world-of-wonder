@@ -6,6 +6,7 @@ import { nanoid } from "nanoid";
 import { LootSchema } from "../schema/LootSchema";
 import { PlayerSchema } from "../schema";
 import { ServerMsg } from "../../../shared/types";
+import { inventoryAuthority } from "../../kei/Inventory";
 
 export class dropCTRL {
     private _owner: PlayerSchema;
@@ -27,24 +28,56 @@ export class dropCTRL {
         console.log("[addExperience]", amount);
     }
 
+    /**
+     * Pay for a kill, which is a mint the issuer signs rather than an addition.
+     *
+     * The amount is rolled here and never read off a client message, and the
+     * account it is paid to is the one this character has proved it holds the key
+     * to — not an address a client sent. `target.sessionId` makes the payment
+     * idempotent, so the same corpse pays once however many times this is
+     * reached.
+     *
+     * Nothing is paid at all today, because nothing can prove a wallet yet
+     * (`kei/Inventory.ts`), and the refusal is said out loud rather than swallowed
+     * — a player whose kills silently stopped paying would think the game was
+     * broken instead of unfinished.
+     */
     public addGold(target) {
         let goldGains = target.goldGain;
         if (target.AI_SPAWN_INFO && target.AI_SPAWN_INFO.goldGain) {
             goldGains = target.AI_SPAWN_INFO.goldGain;
         }
-        if (goldGains.min && goldGains.max) {
-            let gold = Math.floor(randomNumberInRange(goldGains.min, goldGains.max));
-            this._owner.player_data.gold += gold;
-
-            Logger.info(`[gameroom][addGold] player has gained ${gold} gold, total: ${this._owner.player_data.gold}`);
-
-            // inform player
-            this._client.send(ServerMsg.SERVER_MESSAGE, {
-                type: "event",
-                message: "You pick up " + gold + " worth of gold.",
-                date: new Date(),
-            });
+        if (!goldGains || !goldGains.min || !goldGains.max) {
+            return;
         }
+
+        const gold = Math.floor(randomNumberInRange(goldGains.min, goldGains.max));
+        const authority = inventoryAuthority();
+
+        if (!authority) {
+            Logger.warning("[gameroom][addGold] no inventory authority configured, so nothing was paid");
+            return;
+        }
+
+        void authority
+            .pay(this._owner.id, { id: `kill:${target.sessionId}`, gold })
+            .then((result) => {
+                const message =
+                    "paid" in result
+                        ? `You pick up ${gold} gold. It is on the chain now.`
+                        : `You would have picked up ${gold} gold. ${result.reason}`;
+                if (!("paid" in result)) {
+                    Logger.warning(`[gameroom][addGold] ${gold} gold refused: ${result.code}`);
+                }
+                this._client.send(ServerMsg.SERVER_MESSAGE, { type: "event", message, date: new Date() });
+            })
+            // A mint is a chain round trip and a chain round trip can fail. This
+            // is a detached promise, so without a handler the rejection reaches
+            // Node's default and takes the whole game server down over one mob.
+            .catch((error) => {
+                Logger.error(`[gameroom][addGold] paying ${gold} gold failed`, error);
+                this._owner.say("Your gold could not be paid out just now. Nothing was taken from you.");
+            });
     }
 
     public dropItems(target) {

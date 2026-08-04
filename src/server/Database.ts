@@ -2,7 +2,7 @@ import Logger from "./utils/Logger";
 import { DB_MYSQL } from "./utils/database/mysql";
 import { DB_SQLLITE } from "./utils/database/sqllite";
 import { nanoid } from "nanoid";
-import { PlayerCharacter, PlayerSlots, PlayerUser } from "../shared/types";
+import { PlayerCharacter, PlayerUser } from "../shared/types";
 import { ParsedQs } from "qs";
 import { InventorySchema } from "./rooms/schema/player/InventorySchema";
 import { AbilitySchema } from "./rooms/schema/player/AbilitySchema";
@@ -170,7 +170,10 @@ class Database {
 
                 1000,
                 1000,
-                50000,
+                // The `gold` column, which is no longer money and is no longer
+                // read. A new character gets nothing in it rather than 50,000,
+                // so nothing in this database looks like a balance.
+                0,
                 50,
             ]
         ));
@@ -200,30 +203,21 @@ class Database {
             ]);
         }
 
-        // default equipment
-        let equipment = [{ key: "sword_01", slot: PlayerSlots.WEAPON }];
-        for (const e of equipment) {
-            await this.querier.run("INSERT INTO character_equipment (`owner_id`,`slot`, `key`) VALUES (?,?,?) ", [characterId, e.slot, e.key]);
-        }
-
         // default quests
         //const sql_quests = `INSERT INTO character_quests ("owner_id", "key", "status", "qty") VALUES ("${c.id}", "LH_DANGEROUS_ERRANDS_01", "0", "5")`;
         //this.run(sql_quests);
 
-        // add default items
-        let items = [
-            { qty: 5, key: "potion_small_red" },
-            { qty: 5, key: "potion_small_blue" },
-            //{ qty: 1, key: "cape_01" },
-            { qty: 1, key: "sword_01" },
-            { qty: 1, key: "armor_01" },
-            { qty: 1, key: "armor_02" },
-            { qty: 1, key: "amulet_01" },
-        ];
-        for (const item of items) {
-            const sql = "INSERT INTO character_inventory (`owner_id`, `qty`, `order`, `key`) VALUES (?,?,?,?)";
-            this.querier.run(sql, [characterId, item.qty, 1, item.key]);
-        }
+        // A starter kit used to be written here: a sword in `character_equipment`
+        // and five red potions, five blue, a sword, two armours and an amulet in
+        // `character_inventory`. It is gone rather than quarantined, because
+        // writing rows the room is no longer allowed to read would have created a
+        // character whose database says it owns eight things and whose bag —
+        // which is the chain — says it owns none (issue #6, step 1).
+        //
+        // The kit belongs on the chain, delivered to an address the player has
+        // proved is theirs, the same way `STARTING_GOLD` is. Until that proof
+        // exists a new character starts with what the chain says it has, which is
+        // nothing, and can buy its first sword from the vendor.
 
         return await this.getCharacter(characterId);
     }
@@ -246,7 +240,12 @@ class Database {
         }
 
         if (data.player_data) {
-            p["gold"] = data.player_data.gold ?? 0;
+            // `gold` is deliberately not written. The column still exists and
+            // still holds whatever a character last had before the economy moved
+            // to the chain, and it is left exactly as it was: writing it would
+            // let a session overwrite the only record of what the old economy
+            // owed, and reading it would make an editable row into money
+            // (issue #6, `kei/Legacy.ts`).
             p["experience"] = data.player_data.experience ?? 0;
             p["points"] = data.player_data.points ?? 0;
             p["strength"] = data.player_data.strength ?? 0;
@@ -285,8 +284,32 @@ class Database {
         }
     }
 
+    /**
+     * Has this server-authored reward already been minted on the chain?
+     *
+     * The row is the whole answer: it is written before the mint and never
+     * updated, so its presence means "do not pay this again" whether the process
+     * that wrote it finished, crashed, or was replaced.
+     */
+    async hasPaidReward(id: string): Promise<boolean> {
+        const row = await this.querier.get(`SELECT id FROM reward_payments WHERE id=?;`, [id]);
+        return !!row;
+    }
+
+    async recordRewardPayment(entry: { id: string; characterId: number; address: string; gold: number; items: string }) {
+        const sql = "INSERT INTO reward_payments (`id`, `owner_id`, `address`, `gold`, `items`, `paid_at`) VALUES (?,?,?,?,?,?)";
+        return this.querier.run(sql, [entry.id, entry.characterId, entry.address, entry.gold, entry.items, Date.now()] as any);
+    }
+
     // removes and saves character items
     // terrible way to do it
+    //
+    // Nothing calls this any more. `PlayerSchema.save()` used to, and stopping is
+    // half of the boundary in `kei/Legacy.ts`: this method deletes every row a
+    // character has and re-inserts the room's bag, so leaving it wired up while
+    // the room no longer loads the old inventory would have emptied the tables it
+    // is the point of that file to preserve. It is kept because the migration
+    // that finally reads those rows will want the shape of them.
     async saveItems(character_id: number, items: MapSchema<InventorySchema, string>) {
         const sql = `DELETE FROM character_inventory WHERE owner_id=?;`;
         await this.querier.run(sql, [character_id]);
@@ -317,6 +340,10 @@ class Database {
 
     // removes and saves character equipment
     // terrible way to do it
+    //
+    // Also unwired, and for the same reason as `saveItems` above: what is worn is
+    // a reference to an asset the wearer has to still hold, so it cannot be
+    // written back from a room that is not yet allowed to load it.
     async saveEquipment(character_id: number, equipments: MapSchema<EquipmentSchema, string>) {
         const sql = `DELETE FROM character_equipment WHERE owner_id=?;`;
         await this.querier.run(sql, [character_id]);

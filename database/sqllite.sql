@@ -68,3 +68,12 @@ CREATE TABLE IF NOT EXISTS "character_quests" (
     "qty" INTEGER DEFAULT 0,
     UNIQUE("id")
 );
+
+CREATE TABLE IF NOT EXISTS "reward_payments" (
+    "id" TEXT PRIMARY KEY,
+    "owner_id" INTEGER,
+    "address" TEXT,
+    "gold" INTEGER DEFAULT 0,
+    "items" TEXT,
+    "paid_at" INTEGER
+);
