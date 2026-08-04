@@ -17,6 +17,21 @@ export class LootSchema extends Entity {
     public name: string = "";
     public description: string = "";
 
+    /**
+     * Which server-authored event put this on the ground.
+     *
+     * Not networked, and not from anything a client sent. Picking loot up mints
+     * it, so the question "may this become a mint" needs an answer that lives on
+     * the entity rather than in the memory of whoever created it — otherwise a
+     * loot entity is just an object with a key and a quantity, and any code path
+     * that can make one of those can spend the issuer's signature (issue #10).
+     *
+     * `dropCTRL` sets it to the death it rolled the drop table for.
+     * `pickupItem()` refuses anything without it, so the default being empty is
+     * the safe answer to "somebody added a third way to spawn loot".
+     */
+    public source: string = "";
+
     public AI_TARGET;
 
     public _state: GameRoomState;
@@ -26,6 +41,12 @@ export class LootSchema extends Entity {
         // assign data
         Object.assign(this, data);
         Object.assign(this, state.gameData.get("item", this.key));
+
+        // Last, and on its own: the two assignments above copy whole objects,
+        // and the item data is loaded from JSON on disk. An `items.json` that
+        // happened to carry a `source` field would otherwise decide provenance
+        // for every drop of that archetype.
+        this.source = typeof data.source === "string" ? data.source : "";
     }
 
     // entity update

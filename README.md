@@ -106,6 +106,41 @@ inserted by hand never authorizes anything at all. What it does not do is
 restart the process: the record of what was already minted is in SQLite, so the
 test stands a new authority up against it rather than proving a reboot.
 
+### A client message is never the reason a reward exists
+
+The other half of "there is one inventory" is which side of the wire gets to say
+that a reward happened. Until recently the answer had a hole in it: sending
+`PLAYER_HOTBAR_ACTIVATED` with `digit: 6` made the room drop a random item at
+your feet, with no environment check, no capability, and no cooldown. It was a
+debug hotkey that never got taken back out.
+
+That is not a tidiness problem, because of where the ground leads. Walking into a
+loot entity is what makes the issuer sign a mint, and each spawn carried a fresh
+session id — so the payment record that stops a replay would not have stopped
+this. Every press was a *different* reward. The only reason it was not a faucet
+already is that `proofUnavailable` refuses the payment at the end of it, and
+"unfinished elsewhere" is not a security control (issue #10).
+
+What is true now:
+
+- the `digit: 6` branch is deleted, and `spawnCTRL.createItem()` with it. Nothing
+  replaces them, and no configuration brings them back;
+- a loot entity carries `source`, naming the server-authored event that made it,
+  and `pickupItem()` refuses to pay for one without it. The only thing that sets
+  it is `dropCTRL.dropItems()`, rolling a dead mob's own drop table;
+- the reward id is that provenance — `loot:kill:<mob>:<slot>` — rather than the
+  entity's session id, so "how many entities exist" is no longer "how many
+  payments happen";
+- `DEBUG_BOTS` and `DEBUG_REMOVE_ENTITIES` neither mint nor were the hole, but
+  they were registered in production for anyone to send. They now need
+  `KEI_DEBUG_COMMANDS=on`, and are refused outright in a production build
+  whatever that variable says. A client cannot set either fact.
+
+`npm run test:room` is the regression. It drives the real message handler through
+1,200 messages across twelve payload shapes the UI never sends and asserts that no
+payment was ever asked for, checks the debug gate in all four configurations, and
+proves loot without provenance is left on the ground.
+
 ### Buying takes two signatures
 
 The game cannot sign for a player's wallet, so a purchase is always the player
@@ -195,6 +230,8 @@ src/server/kei/Economy.test.ts  the rules, against a chain in-process
 src/server/kei/Inventory.test.ts the boundary: a SQLite row owns nothing, and a reward pays once
 src/server/kei/Market.test.ts   two players trading, with this server on neither leg
 src/server/kei/endtoend.test.ts the same things across a URL, the way a browser does it
+src/server/rooms/Messages.test.ts what a client message is allowed to cause, and what it is refused
+src/server/utils/DebugCommands.ts whether this process answers debug messages at all
 src/client/Controllers/Wallet.ts  the player's key, and the only thing that spends their gold
 src/client/Controllers/UI/Panels/Dialog/VendorDialog.ts  the shop, as a player sees it
 src/client/Controllers/UI/Panels/Panel_Auction.ts        the auction house, as a player sees it
@@ -204,7 +241,7 @@ src/client/Utils/index.ts       where the client looks for the server
 ## Tests
 
 ```sh
-npm run test            # test:startup, test:economy, test:market, test:inventory — all in-process
+npm run test            # test:startup, test:economy, test:market, test:inventory, test:room — all in-process
 npm run server-start &
 npm run test:e2e        # the same things over HTTP, sharing no memory with the server
 ```
@@ -298,7 +335,8 @@ working directory, so start it from the project root:
 | `KEI_NETWORK` | `testnet` (default), `mainnet`, or `mock`. Mainnet is not open and has no faucet, so it stops with an explanation rather than settling elsewhere. |
 | `KEI_NODE` | A node URL, overriding the public one for `KEI_NETWORK`. Unset is the normal case. A custom node is treated as persistent and requires `KEI_GAME_SEED`, including when labelled `mock`. |
 | `KEI_EXCHANGE` | `off` disables paying Kei for gold. SPEC §8 requires the game to be playable with payments off. |
-| `NODE_ENV` | `production` closes `/kei/grant`, never loads the Colyseus monitor, and turns off the latency simulation. |
+| `NODE_ENV` | `production` closes `/kei/grant`, never loads the Colyseus monitor, turns off the latency simulation, and refuses every debug room message regardless of `KEI_DEBUG_COMMANDS`. |
+| `KEI_DEBUG_COMMANDS` | `on` answers the `DEBUG_BOTS` and `DEBUG_REMOVE_ENTITIES` room messages. Anything else, including unset, refuses them. Ignored in a production build. No client can set it, and there is no debug message that creates value for it to enable. |
 | `DATABASE_PATH` | Where sqlite keeps accounts and characters. Defaults to `./database.db`. |
 | `DATABASE_HOST` `DATABASE_DB` `DATABASE_USER` `DATABASE_PASSWORD` | mysql, read only when `database` in `src/shared/Config.ts` is `"mysql"`. |
 | `GAME_SERVER` | Build-time, not runtime — see above. |

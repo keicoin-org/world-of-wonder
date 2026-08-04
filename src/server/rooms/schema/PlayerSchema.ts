@@ -365,6 +365,17 @@ export class PlayerSchema extends Entity {
         // play animation // disabled
         //this.animationCTRL.playAnim(this, EntityState.PICKUP, () => {});
 
+        // Provenance before anything else. A loot entity is only payable if a
+        // server-authored gameplay event put it there, and `source` is where that
+        // event names itself — so an entity that arrived some other way is left
+        // on the ground rather than minted (issue #10). Today the only thing that
+        // sets it is `dropCTRL.dropItems()`.
+        if (!loot.source) {
+            Logger.warning(`[pickupItem] ${loot.key} (${loot.sessionId}) has no server-authored provenance and was not paid for`);
+            this.say("That was not put there by anything this world did, so it is not yours to pick up.");
+            return false;
+        }
+
         const authority = inventoryAuthority();
         if (!authority) {
             this.say(NO_AUTHORITY_REASON);
@@ -379,9 +390,12 @@ export class PlayerSchema extends Entity {
             return false;
         }
 
-        // The loot's own id is the idempotency key: one entity, one payment,
-        // however many times two clients race to walk into it.
-        const reward = { id: `loot:${loot.sessionId}`, items: [{ key: loot.key, qty: loot.qty }] };
+        // The provenance is the idempotency key, not the entity's session id. A
+        // session id is fresh per object, so it made "how many entities exist"
+        // into "how many payments happen" — which is exactly the lever the debug
+        // spawner pulled. Keyed by the death and the drop slot instead, a second
+        // entity for the same drop pays nothing however it came to exist.
+        const reward = { id: `loot:${loot.source}`, items: [{ key: loot.key, qty: loot.qty }] };
 
         if (this._state.entities.get(loot.sessionId)) {
             this._state.entities.delete(loot.sessionId);

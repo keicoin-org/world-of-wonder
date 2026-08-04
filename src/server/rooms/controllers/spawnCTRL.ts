@@ -1,4 +1,4 @@
-import { BrainSchema, LootSchema } from "../schema";
+import { BrainSchema } from "../schema";
 import { GameRoom } from "../GameRoom";
 import { EntityState, Speed } from "../../../shared/types";
 import { nanoid } from "nanoid";
@@ -20,14 +20,6 @@ export class spawnCTRL {
         this._state = state;
         this._room = state._gameroom;
         this.location = this._state.gameData.get("location", this._room.metadata.location);
-
-        // add fake item for testing purposes
-        if (this.location.key === "lh_town") {
-            // add items to the ground
-            for (let i = 0; i < 400; i++) {
-                //this.createItem();
-            }
-        }
 
         //
         this.process();
@@ -144,39 +136,17 @@ export class spawnCTRL {
         }
     }
 
-    public createItem(sender?) {
-        // create drops
-        let sessionId = nanoid(10);
-
-        // monster pool to chose from
-        let Items = this._state.gameData.load("items");
-        let keys = Object.keys(Items);
-        let rand = keys[Math.floor(Math.random() * keys.length)];
-        let randData = Items[rand];
-
-        //
-        let randomRegion = this._room.navMesh.getRandomRegion();
-        let currentPosition = randomRegion.centroid;
-        if (sender) {
-            let currentPosition = sender.getPosition();
-            currentPosition.x += randomNumberInRange(0.1, 1.5);
-            currentPosition.z += randomNumberInRange(0.1, 1.5);
-        }
-
-        let data = {
-            name: randData.title,
-            key: randData.key,
-            sessionId: sessionId,
-            x: currentPosition.x,
-            y: currentPosition.y,
-            z: currentPosition.z,
-            qty: 1,
-        };
-        let entity = new LootSchema(this._state, data);
-        this._state.entityCTRL.add(entity);
-
-        //Logger.info("[gameroom][state][createEntity] created new item " + data.key + ": " + sessionId);
-    }
+    // `createItem(sender?)` was here: it picked a random archetype out of the
+    // item data, made one unit of it, and put it at whoever asked. Its only
+    // caller was a debug hotkey in the room's message handler, and both are gone
+    // (issue #10).
+    //
+    // It is deleted rather than left unreferenced because a loot entity is the
+    // shape a mint takes here — `PlayerSchema.pickupItem()` pays the issuer's
+    // signature for one — so a method that manufactures them out of nothing is a
+    // faucet waiting for somebody to wire it back up. Loot now comes from
+    // `dropCTRL.dropItems()`, off a mob's own drop table, and carries the death
+    // it came from.
 
     public createEntity(spawn) {
         // random id

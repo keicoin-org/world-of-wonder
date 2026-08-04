@@ -80,10 +80,24 @@ export class dropCTRL {
             });
     }
 
+    /**
+     * Roll a dead mob's drop table and put the result on the ground.
+     *
+     * This is the only thing in the server that creates a loot entity, and after
+     * issue #10 it is meant to stay the only one. Each drop is stamped with the
+     * death that produced it, because walking into one of these mints it: the
+     * ground is where a server-authored reward waits to be claimed, so an entity
+     * that cannot say which gameplay event authored it is one `pickupItem()`
+     * refuses to pay for.
+     *
+     * The keys come from `target.AI_SPAWN_INFO.drops`, which is server game data,
+     * and the quantities from `GetLoot`. Neither is reachable from a client
+     * message.
+     */
     public dropItems(target) {
         let items = target.AI_SPAWN_INFO.drops ?? [];
         let loot = GetLoot(items);
-        loot.forEach((drop) => {
+        loot.forEach((drop, index) => {
             // drop item on the ground
             let sessionId = nanoid(10);
             let currentPosition = target.getPosition();
@@ -97,6 +111,10 @@ export class dropCTRL {
                 y: 0.25,
                 z: currentPosition.z,
                 qty: drop.quantity,
+                // The corpse and which drop of it this is. Stable across a
+                // restart of this loop, so the same death cannot be rolled into
+                // two payable entities for the same slot.
+                source: `kill:${target.sessionId}:${index}`,
             };
             let entity = new LootSchema(this._owner._state, data);
             this._owner._state.entities.set(sessionId, entity);

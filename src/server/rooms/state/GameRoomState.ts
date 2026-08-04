@@ -13,6 +13,7 @@ import Logger from "../../utils/Logger";
 import { ItemClass, ServerMsg, Speed } from "../../../shared/types";
 import { Config } from "../../../shared/Config";
 import { describeLegacy, isEmptyLegacy, quarantineLegacy } from "../../kei/Legacy";
+import { debugCommandsEnabled, refuseDebugCommand } from "../../utils/DebugCommands";
 
 export class GameRoomState extends Schema {
     // networked variables
@@ -323,10 +324,22 @@ export class GameRoomState extends Schema {
 
             Logger.warning(`[ServerMsg.PLAYER_HOTBAR_ACTIVATED]`, data.digit);
 
-            if (data.digit === 6) {
-                this.spawnCTRL.createItem(playerState);
-                return false;
-            }
+            // `digit === 6` used to reach `spawnCTRL.createItem()` and put a
+            // random item on the ground at the sender's feet. It is gone, and
+            // digit 6 is now an ordinary empty hotbar slot.
+            //
+            // The branch was a debug hotkey that survived into production message
+            // handling with no environment check, no capability, and no cooldown.
+            // What made it more than untidy is where the ground leads: a loot
+            // entity is a thing `pickupItem()` pays the issuer's signature for,
+            // so a client that can create loot entities is a client that can
+            // decide how many mints happen. Each spawn carries a fresh session id
+            // and therefore a fresh idempotency key, so the payment record that
+            // stops a replay would not have stopped this — every iteration was a
+            // different reward (issue #10).
+            //
+            // Nothing replaces it. A room message may express what a player wants
+            // to do; it may not be the reason a reward exists.
 
             if (!hotbarData) {
                 return false;
@@ -350,38 +363,25 @@ export class GameRoomState extends Schema {
 
         /////////
         /////// DEBUG /////////////////
+        //
+        // Neither of these creates value, so neither is issue #10's hole. They
+        // are behind the same door anyway: both were registered unconditionally,
+        // which is the mistake that made the item spawner reachable, and
+        // `DEBUG_REMOVE_ENTITIES` does delete loot entities the drop tables
+        // authored. `KEI_DEBUG_COMMANDS=on` is a fact about the server and it is
+        // ignored entirely in a production build.
+
+        if (type === ServerMsg.DEBUG_BOTS || type === ServerMsg.DEBUG_REMOVE_ENTITIES) {
+            if (!debugCommandsEnabled()) {
+                refuseDebugCommand(ServerMsg[type], client.sessionId);
+                return false;
+            }
+        }
 
         // debug: add random entities
         if (type === ServerMsg.DEBUG_BOTS) {
             this.spawnCTRL.debug_bots();
         }
-
-        /*
-        if (process.env.NODE_ENV !== "production") {
-            let amountToChange = 100;
-
-            // debug: add 100 entities
-            if (type === ServerMsg.DEBUG_INCREASE_ENTITIES) {
-                this.spawnCTRL.debug_increase(amountToChange);
-            }
-
-            // debug: delete 100 entities
-            if (type === ServerMsg.DEBUG_DECREASE_ENTITIES) {
-                let i = 1;
-                this.spawnCTRL.debug_decrease(amountToChange);
-                this.entities.forEach((entity) => {
-                    if (
-                        entity instanceof BrainSchema &&
-                        entity.AI_SPAWN_INFO &&
-                        (entity.AI_SPAWN_INFO.key === "lh_town_thief" || entity.AI_SPAWN_INFO.key === "lh_town_bandits") &&
-                        i <= amountToChange
-                    ) {
-                        this.spawnCTRL.removeEntity(entity);
-                        i++;
-                    }
-                });
-            }
-        }*/
 
         if (type === ServerMsg.DEBUG_REMOVE_ENTITIES) {
             if (this.entityCTRL.hasEntities()) {
