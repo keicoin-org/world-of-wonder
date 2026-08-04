@@ -338,6 +338,10 @@ variable. A host that assigns you a port expects that file to be edited.
      the signature — is a `ProofVerifier` parameter waiting for a function.
   2. **Loot, quest payouts, and pickups start paying.** These are already
      written and tested; they refuse only because step 1 has not happened.
+     This is not a backlog: a quest completed while proof is unavailable stays
+     complete and permanently unpaid. Payment ids prevent duplicate minting;
+     they do not provide eventual delivery or retroactive payout, which needs a
+     separate durable retry/backfill design before wallet binding ships.
   3. **Equipping and consuming a chain-owned item.** The room needs to load a
      proven wallet's holdings into `player_data.inventory` on join and
      revalidate before each use, and `PLAYER_USE_ITEM` needs to take an item key
