@@ -116,7 +116,10 @@ ALTER TABLE `character_hotbar` MODIFY `id` int(10) NOT NULL AUTO_INCREMENT, AUTO
 -- Not dropped on startup, unlike everything above it. This is the record of
 -- which server-authored rewards have already been minted on the chain, and a
 -- restart that forgot it would pay every one of them a second time. It holds no
--- balance and authorizes nothing; the chain is still the only ledger.
+-- balance and authorizes nothing. The chain is still the only ledger. Keep the
+-- statement separator out of the prose in this file, comments included --
+-- createDatabase() splits on it, and a sentence cut in half takes the statement
+-- underneath it along.
 --
 -- Known limitation on this adapter, and only this one. Every table above is
 -- dropped and recreated on each boot, so `characters.id` restarts at 1 while
