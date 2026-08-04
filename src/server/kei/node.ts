@@ -83,7 +83,7 @@ export async function openChain(configuration = resolveChainConfiguration()): Pr
   return { network }
 }
 
-export function resolveNetwork(configuredNetwork = process.env.KEI_NETWORK): Network {
+export function resolveNetwork(configuredNetwork?: string): Network {
   const raw = (configuredNetwork ?? '').trim().toLowerCase()
   if (raw === '') return 'testnet'
   if ((NETWORKS as readonly string[]).includes(raw)) return raw as Network
