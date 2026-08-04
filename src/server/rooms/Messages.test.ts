@@ -136,7 +136,7 @@ function room(): { state: GameRoomState; spawner: Spawner; player: any; client: 
     { digit: 6.0 },
     { digit: 6, admin: true },
     { digit: 6, targetId: 'player-1' },
-    { digit: 06 },
+    { digit: '  6  ' },
     { digit: [6] },
     { digit: { valueOf: () => 6 } },
     { digit: 6, qty: 1000, key: 'sword_01' },
