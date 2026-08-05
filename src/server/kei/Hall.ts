@@ -32,6 +32,7 @@
  * seller's problem instead of the network's (§9.3).
  */
 
+import { isAddress } from 'kei-transaction'
 import type { Kei, Offer, Trade } from 'kei-transaction'
 
 /** One listing, named for what a player is looking at rather than what it is. */
@@ -121,6 +122,16 @@ const HISTORY_LIMIT = 100
  * settled ones — and the SDK reads accounts one after another, so this is a
  * ceiling of ~256 node calls per walk. Somewhere far above any session this
  * template will see, and still a request that finishes.
+ *
+ * What this ceiling bounds is *cost*, and it is worth being explicit that it does
+ * not bound *visibility*. Announcing is unauthenticated, so 128 announcements
+ * from one source evict every real seller from a full roster and the auction house
+ * shows an empty board to everybody. Requiring a real address (issue #18) raised
+ * the price of doing that from nothing to 128 keypairs — and keypairs are free to
+ * generate, so it raised it from nothing to nearly nothing. The fix that actually
+ * bounds it is to stop evicting the accounts the last walk saw holding an open
+ * offer, and to take from the announced-but-never-seen tail first. That is a
+ * separate change and is not made here.
  */
 const ROSTER_LIMIT = 128
 
@@ -230,7 +241,13 @@ export function openHall(options: HallOptions): Hall {
 
   return {
     watch(address) {
-      if (typeof address !== 'string' || !address.startsWith('kei_')) return
+      // `address.startsWith('kei_')` was what this used to ask, which admitted
+      // the four-character string `kei_` and everything after it. The comment
+      // above about a ceiling on "any well-formed address" was relying on a check
+      // that did not establish well-formed — and this is the *only* check on the
+      // paths that reach here from `Economy.ts`, so it is not the route's
+      // validator repeated (issue #18).
+      if (!isAddress(address)) return
       // Delete first, so re-announcing moves this address to the end of the
       // insertion order rather than leaving it where it was.
       traders.delete(address)

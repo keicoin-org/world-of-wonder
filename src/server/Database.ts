@@ -58,9 +58,15 @@ class Database {
         return await this.querier.get(sql, [token]);
     }
 
-    async getUserById(user_id: number): Promise<PlayerUser> {
+    // The declared type says `| undefined` rather than hiding it behind the `<any>`
+    // cast this used to carry. A single-row `get` with no match resolves to
+    // undefined, so the cast was the only reason the compiler accepted the next
+    // line, and the next line is what turned a missing row into a crash in a
+    // handler that had no `.catch` (issue #17).
+    async getUserById(user_id: number): Promise<PlayerUser | undefined> {
         const sql = `SELECT * FROM users WHERE id=?;`;
-        let user = await (<any>this.querier.get(sql, [user_id]));
+        let user = <PlayerUser>await this.querier.get(sql, [user_id]);
+        if (!user) return undefined;
         user.characters = await this.getCharactersForUser(user_id);
         return user;
     }
@@ -108,6 +114,10 @@ class Database {
 
     async getCharacter(id: number) {
         let character = await this.querier.get(`SELECT * FROM characters WHERE id=?;`, [id]);
+        // Same shape as getUserById: no row is `undefined`, and every line below
+        // this one writes through it. Callers already branch on a falsy result —
+        // they just never got one, because this threw first.
+        if (!character) return undefined;
         character.abilities = await this.querier.all(`SELECT CA.* FROM character_abilities CA WHERE CA.owner_id=? ORDER BY CA.id ASC;`, [id]);
         character.hotbar = await this.querier.all(`SELECT CA.* FROM character_hotbar CA WHERE CA.owner_id=? ORDER BY CA.digit ASC;`, [id]);
         character.inventory = await this.querier.all(`SELECT CI.* FROM character_inventory CI WHERE CI.owner_id=?;`, [id]);
@@ -122,6 +132,10 @@ class Database {
 
     async createCharacter(token, name, race, material, head) {
         let user = await this.getUserByToken(token);
+        // An unknown token reached `user.id` in the parameter list below, so
+        // `POST /create_character?token=anything` was the same fatal dereference
+        // as issue #17 wearing a different route.
+        if (!user) return undefined;
         let characterId = await (<any>this.querier.run(
             `INSERT INTO characters (
                     user_id, 

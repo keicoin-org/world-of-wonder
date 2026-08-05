@@ -18,7 +18,7 @@ import axios from "axios";
 import { Kei, type Offer } from "kei-transaction";
 
 import { apiUrl, nodeUrl } from "../Utils/index";
-import { offerMatchesDisplay } from "../../shared/market";
+import { lotOffer, offerMatchesDisplay, priceLot } from "../../shared/market";
 
 export interface ShopItem {
     key: string;
@@ -174,6 +174,13 @@ export class Wallet {
      * the only way an arriving pile of gold can be matched to what it was for.
      * Then we pay, which only the player can do. Delivery is the shop's answer to
      * the gold landing — so this waits for the item, not for a response.
+     *
+     * `order.id` is the only name that order has, and holding it is what makes
+     * this purchase the player's own: the shop keys orders on it rather than on
+     * an address, so a second order — anybody's — is a second order rather than a
+     * replacement for this one (issue #13). It is also how the shop can say it
+     * sent the gold back, instead of the player being left to infer it from an
+     * item that never turns up.
      */
     public async buy(key: string, qty: number): Promise<void> {
         const item = this.mustKnow(key);
@@ -183,15 +190,42 @@ export class Wallet {
 
         const order = await this.ask("/kei/order", { address: this.address, key, qty });
         const gold = await this._kei.token.get(order.asset);
+        // Exactly the quoted price, because that is how the shop tells which
+        // order a payment is for. Paying more is a mismatch, not a tip.
         await gold.transfer(order.to, order.price);
 
+        let returned = "";
         const delivered = await this.until(async () => {
             await this.refresh();
-            return (this.inventory[key] ?? 0) >= before + qty;
+            if ((this.inventory[key] ?? 0) >= before + qty) return true;
+            const status = await this.orderStatus(order.id);
+            if (status?.state === "refunded") {
+                returned = status.reason ?? "The shop could not fill that order and has sent your gold back.";
+                return true;
+            }
+            return false;
         });
 
+        if (returned !== "") {
+            throw new Error(returned);
+        }
         if (!delivered) {
             throw new Error(`Your gold was sent, but ${item.title} has not arrived yet. Check again in a moment.`);
+        }
+    }
+
+    /**
+     * What the shop says became of an order.
+     *
+     * Not knowing is an ordinary answer — an order is forgotten once it is old
+     * enough — so a failure to read one is never worth interrupting a purchase
+     * for. What the chain says we hold is what settles it either way.
+     */
+    private async orderStatus(id: string): Promise<{ state: string; reason?: string } | undefined> {
+        try {
+            return (await axios.get(this._base + "/kei/order/" + encodeURIComponent(id))).data;
+        } catch (error) {
+            return undefined;
         }
     }
 
@@ -277,7 +311,12 @@ export class Wallet {
     }
 
     /**
-     * List an item for gold.
+     * List an item for gold, at `each` gold per unit.
+     *
+     * Per unit, and named so, because the offer's `want` leg is the lot total and
+     * these are the same number only when `qty` is 1 (issue #14). `priceLot` does
+     * the multiply, refuses a price that cannot be settled exactly, and is the
+     * only thing in this repository that turns one into the other.
      *
      * `market.offer()`, not `market.sell()`: `sell()` prices in Kei, and this
      * world's money is gold — an asset it issues. The distinction compiles
@@ -287,14 +326,9 @@ export class Wallet {
      * leaves the bag the moment this returns and comes back only if the listing
      * is cancelled. Nobody else's asset is locked by any of this.
      */
-    public async list(key: string, price: number, qty: number = 1): Promise<Listing> {
+    public async list(key: string, each: number, qty: number = 1): Promise<Listing> {
         const item = this.mustKnow(key);
-        if (!Number.isInteger(price) || price < 1) {
-            throw new Error("Ask a whole number of gold, and at least 1.");
-        }
-        if (!Number.isInteger(qty) || qty < 1) {
-            throw new Error("List a whole number of them, and at least 1.");
-        }
+        const lot = priceLot(each, qty);
 
         await this.refresh();
         const held = this.inventory[key] ?? 0;
@@ -302,10 +336,7 @@ export class Wallet {
             throw new Error(`You have ${held} ${item.title} to list, not ${qty}.`);
         }
 
-        const offer = await this._kei.market.offer({
-            give: { asset: item.asset, amount: qty },
-            want: { asset: this._coin, amount: price },
-        });
+        const offer = await this._kei.market.offer(lotOffer(item.asset, this._coin, lot));
 
         await this.announce();
         await this.refresh();

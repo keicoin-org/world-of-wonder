@@ -15,6 +15,8 @@
  * chain says actually paid it.
  */
 
+import { randomBytes } from 'node:crypto'
+
 import { Kei, type IssuerToken, type Item } from 'kei-transaction'
 import type { KeiNode } from 'kei-transaction'
 
@@ -22,6 +24,7 @@ import { openHall, type Hall } from './Hall'
 import { reconcileAgainst, type Issuance } from './Outbox'
 import { ItemsDB } from '../data/ItemDB'
 import type { Item as ItemData } from '../../shared/types'
+import Logger from '../utils/Logger'
 
 /** The currency the world prices things in. t5c called it gold; so do we. */
 export const COIN = {
@@ -48,6 +51,15 @@ const ITEM_SUPPLY = 100_000
 
 /** An order nobody paid for is forgotten after this long. */
 const ORDER_TTL_MS = 120_000
+
+/**
+ * How long an order's name is, in bytes of randomness.
+ *
+ * The id is the whole of an order's authorization, so it has to be a secret
+ * rather than a serial number: 24 bytes from the platform CSPRNG is not
+ * enumerable, and the only party ever told one is the party that asked for it.
+ */
+const ORDER_ID_BYTES = 24
 
 /** The oldest shopkeeper's margin there is: you sell back for half of list. */
 export const buybackPrice = (value: number): number => Math.floor(value / 2)
@@ -79,6 +91,42 @@ export interface CataloguePayload {
   }>
 }
 
+/**
+ * Where an order got to. There are only three answers, and two of them are
+ * final: the item was minted, or the gold went back.
+ */
+export type OrderState = 'open' | 'delivered' | 'refunded'
+
+/** What the client is handed when the shop takes an order. */
+export interface OrderTicket {
+  /**
+   * The order's name, and the only name it has.
+   *
+   * Unguessable on purpose. An address is public — every hall listing prints one
+   * — so an order keyed on an address is an order any stranger can find, and
+   * before this id existed the map held one slot per address, which made it an
+   * order any stranger could overwrite (issue #13). The id is returned to
+   * whoever placed the order and told to nobody else.
+   */
+  id: string
+  /** Where to send the gold. The client signs that transfer itself. */
+  to: string
+  /** What the whole order costs, in gold. Pay exactly this. */
+  price: number
+  asset: string
+}
+
+/** What became of an order, for whoever holds its id. */
+export interface OrderStatus {
+  id: string
+  state: OrderState
+  key: string
+  qty: number
+  price: number
+  /** Why the gold came back. Written to be shown to a player as-is. */
+  reason?: string
+}
+
 export interface Economy {
   address: string
   /**
@@ -97,7 +145,13 @@ export interface Economy {
   issuance: Issuance
   catalogue(): CataloguePayload
   /** Take an order, so an anonymous coin transfer can be matched to a purchase. */
-  order(player: string, key: string, qty?: number): Promise<{ to: string; price: number; asset: string }>
+  order(player: string, key: string, qty?: number): Promise<OrderTicket>
+  /**
+   * What became of an order. Undefined for an id that is not one, which is also
+   * what a guess gets — the id is the only credential this needs, so there is
+   * nothing here to learn from an address.
+   */
+  orderStatus(id: string): OrderStatus | undefined
   /** What the chain says a player holds. Not a cache — the chain is asked. */
   goldOf(address: string): Promise<number>
   inventoryOf(address: string): Promise<Record<string, number>>
@@ -120,10 +174,15 @@ export interface Economy {
 }
 
 interface Order {
+  id: string
+  /** Whose payment this order is waiting for. */
+  address: string
   key: string
   qty: number
   price: number
   at: number
+  state: OrderState
+  reason?: string
 }
 
 export async function startEconomy(options: EconomyOptions): Promise<Economy> {
@@ -212,7 +271,112 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
     ? kei.acceptTopUps({ token: gold, rate: GOLD_PER_KEI, minimum: MINIMUM_TOP_UP })
     : undefined
 
+  /**
+   * Live orders, keyed by their own unguessable id and never by address.
+   *
+   * One slot per address was the whole of issue #13: a second order replaced the
+   * first, so anybody who could name an address — which is everybody — could
+   * change what that address's next payment bought, and a player who opened two
+   * vendor panels could do it to themselves. An id per order means concurrent
+   * orders from one address are ordinary rather than mutually destructive.
+   */
   const orders = new Map<string, Order>()
+
+  /** An order nobody paid for is not worth remembering. */
+  const forgetStaleOrders = (): void => {
+    for (const [id, order] of orders) {
+      if (Date.now() - order.at > ORDER_TTL_MS) orders.delete(id)
+    }
+  }
+
+  /**
+   * Gold that bought nothing goes back.
+   *
+   * There is no third option. The shop cannot ask what a transfer was for after
+   * the fact and it has no claim on gold it did not sell anything for, so the
+   * only honest answers are "deliver" and "return" — and before this existed the
+   * answer to a mismatch was "keep it", which cost a player 990 gold in the
+   * report that found it.
+   */
+  const refund = async (address: string, amount: number, why: string): Promise<void> => {
+    try {
+      await gold.transfer(address, amount)
+    } catch (error) {
+      // Worth saying loudly: an unreturned refund is indistinguishable from the
+      // shop having simply pocketed the difference.
+      Logger.error(`[kei][refund] ${amount} gold owed back to ${address} (${why}): ${(error as Error).message}`)
+    }
+  }
+
+  /**
+   * Match an arriving pile of gold to the order it paid for, or give it back.
+   *
+   * A transfer carries no memo (decisions-m0 §4), so the arrival names only a
+   * payer and an amount. That is enough to identify one of *that payer's* own
+   * orders and never enough to identify an order somebody else placed for them:
+   * the price has to be exactly right, and where two of the payer's live orders
+   * would both fit and would deliver different things, the shop refuses to guess.
+   */
+  const settleGold = async (from: string, amount: number): Promise<void> => {
+    forgetStaleOrders()
+    const waiting = [...orders.values()]
+      .filter((order) => order.state === 'open' && order.address === from && order.price === amount)
+      .sort((a, b) => a.at - b.at)
+
+    if (waiting.length === 0) {
+      await refund(
+        from,
+        amount,
+        'no open order at that price',
+      )
+      return
+    }
+
+    // Two orders for the same item at the same quantity are interchangeable, so
+    // paying for one of them is not ambiguous — a player who clicked Buy twice
+    // gets one of the two things they asked for, which is one of the two things
+    // they asked for either way. Two orders that would deliver *different*
+    // things are ambiguous, and guessing between them is precisely how a
+    // stranger's order gets to spend somebody else's gold.
+    const order = waiting[0]!
+    const contested = waiting.some((other) => other.key !== order.key || other.qty !== order.qty)
+    if (contested) {
+      const why =
+        'Two different orders were waiting on a payment of exactly this much, so the shop could not tell which one your gold was for. It has been sent back — order one thing at a time.'
+      for (const tied of waiting) {
+        tied.state = 'refunded'
+        tied.reason = why
+      }
+      await refund(from, amount, 'more than one order matched, delivering different items')
+      return
+    }
+
+    // Claimed before anything is awaited. Two payments landing together must not
+    // both find this order open and mint against it twice.
+    order.state = 'delivered'
+
+    const token = itemTokens.get(order.key)
+    if (!token) {
+      order.state = 'refunded'
+      order.reason = `This world no longer issues ${order.key}, so your gold has been returned.`
+      await refund(from, amount, `no issuer token for ${order.key}`)
+      return
+    }
+
+    try {
+      await token.mint(from, order.qty)
+    } catch (error) {
+      order.state = 'refunded'
+      order.reason = 'The shop could not hand the item over, so your gold has been returned.'
+      await refund(from, amount, `minting ${order.qty} ${order.key} failed: ${(error as Error).message}`)
+      return
+    }
+
+    // The shop is a sink: gold spent here stops existing, which frees the
+    // headroom it took under the cap (SPEC §5.6.6).
+    await gold.burn(order.price)
+    options.onDelivered?.({ to: from, key: order.key, qty: order.qty })
+  }
 
   /**
    * Settlement, both ways round. Everything the shop does is a reaction to
@@ -233,19 +397,7 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
     hall.watch(arrival.from)
 
     if (arrival.asset === gold.id) {
-      const order = orders.get(arrival.from)
-      if (!order || arrival.amount < order.price) return
-      orders.delete(arrival.from)
-
-      void (async () => {
-        const token = itemTokens.get(order.key)
-        if (!token) return
-        await token.mint(arrival.from, order.qty)
-        // The shop is a sink: gold spent here stops existing, which frees the
-        // headroom it took under the cap (SPEC §5.6.6).
-        await gold.burn(order.price)
-        options.onDelivered?.({ to: arrival.from, key: order.key, qty: order.qty })
-      })()
+      void settleGold(arrival.from, arrival.amount)
       return
     }
 
@@ -341,12 +493,25 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
         throw new Error(`${data.title ?? key} costs ${price} gold and you have ${held}.`)
       }
 
-      for (const [who, order] of orders) {
-        if (Date.now() - order.at > ORDER_TTL_MS) orders.delete(who)
-      }
-      orders.set(player, { key, qty, price, at: Date.now() })
+      forgetStaleOrders()
+      const id = randomBytes(ORDER_ID_BYTES).toString('hex')
+      orders.set(id, { id, address: player, key, qty, price, at: Date.now(), state: 'open' })
       hall.watch(player)
-      return { to: kei.address, price, asset: gold.id }
+      return { id, to: kei.address, price, asset: gold.id }
+    },
+
+    orderStatus(id) {
+      forgetStaleOrders()
+      const order = orders.get(id)
+      if (!order) return undefined
+      return {
+        id: order.id,
+        state: order.state,
+        key: order.key,
+        qty: order.qty,
+        price: order.price,
+        ...(order.reason === undefined ? {} : { reason: order.reason }),
+      }
     },
 
     async goldOf(address) {
