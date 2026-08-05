@@ -105,19 +105,19 @@ class GameServer {
             deliver: process.env.KEI_REWARD_DELIVERY === "on",
         });
 
-        // On MySQL every gameplay table is dropped and recreated on boot, so
-        // `characters.id` starts again at 1 while the outbox survives. A reward id
-        // names a character by that id, so a row from before this restart may
-        // belong to a character that no longer exists — or, worse, to a different
-        // one that now answers to the same number. Neither is deliverable, so they
-        // all stop and wait for a person rather than being paid to whoever
-        // inherited the id (issue #9).
-        if (this.config.database === "mysql") {
-            const held = await outbox.quarantine(
-                "This reward was authored before the character table was recreated, so who it belongs to can no longer be established."
-            );
-            if (held > 0) Logger.warning(`[outbox] held ${held} rewards: character ids were reused by this restart`);
-        }
+        // There used to be a MySQL-only startup quarantine here, because that
+        // adapter dropped and recreated `characters` on every boot and a reward id
+        // names a character by an id that therefore meant somebody else after a
+        // restart. `database/mysql.sql` no longer drops anything, so the reuse it
+        // defended against cannot happen — and leaving it would have been worse
+        // than useless: holding the whole pending queue on every boot means this
+        // adapter never delivers a reward at all (issue #21).
+        //
+        // Nothing pending predates that change. Under the old code the last boot
+        // that dropped the table also held everything then pending, and `held` is
+        // terminal, so every row still pending was enqueued against the character
+        // table that is now kept. `outbox.quarantine()` stays on the interface for
+        // an operator who needs it.
 
         const rewardTicker = setInterval(() => {
             void outbox.drain().catch((error) => Logger.error("[outbox] a delivery pass failed", error));
