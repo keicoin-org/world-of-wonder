@@ -5,7 +5,11 @@ class Auth {
         const character = await db.getCharacter(authData.character_id);
 
         if (!character) {
-            Logger.error("[gameroom][onAuth] client could not authentified, joining failed.", character.character_id);
+            // This branch used to read `character.character_id` off the thing it
+            // had just found to be falsy — the same shape as issue #17, and it
+            // became reachable the moment getCharacter started answering
+            // `undefined` for a missing row instead of throwing.
+            Logger.error("[gameroom][onAuth] no character " + authData.character_id + ", joining failed.");
             return false;
         }
 
