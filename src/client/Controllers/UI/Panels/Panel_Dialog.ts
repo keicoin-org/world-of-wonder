@@ -113,8 +113,8 @@ export class Panel_Dialog extends Panel {
         if (currentDialog.quests) {
             let q = 1;
             currentDialog.quests.forEach((btn: any) => {
-                // Bracket-read this was always undefined, so a finished quest
-                // kept its orange "!" and offered itself again (issue #12).
+                // Whether this resolves decides if a finished quest keeps
+                // offering itself with an orange "!".
                 let playerQuest = QuestsHelper.progress(this._currentPlayer.player_data.quests, btn.key) ?? false;
 
                 if (playerQuest && playerQuest.status === 1) return false;

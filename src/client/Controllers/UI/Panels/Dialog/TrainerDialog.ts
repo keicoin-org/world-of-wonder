@@ -81,9 +81,8 @@ export class TrainerDialog {
     }
 
     playerHasAbility(ability) {
-        // `abilities` is a MapSchema and this used to read it with brackets, so
-        // it answered no for every ability the player already knew and the
-        // trainer kept offering to teach them again (issue #12).
+        // `abilities` is a MapSchema; read it as one. See the note in
+        // `dynamicCTRL.isQuestReadyToComplete()` (issue #12).
         return this.panel._currentPlayer.player_data.abilities.get(ability.key) ? true : false;
     }
 

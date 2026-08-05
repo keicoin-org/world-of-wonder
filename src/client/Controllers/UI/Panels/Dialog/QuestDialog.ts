@@ -48,10 +48,8 @@ export class QuestDialog {
         this.currentLocation = this.panel._game.getGameData("location", this.currentQuest.location);
 
         // get player quest
-        // Read with brackets this was undefined for every quest the player had
-        // ever accepted, so the dialog only ever drew its "not accepted yet"
-        // branch — there was no way to reach the hand-in button from the UI at
-        // all, and no way to see a kill count (issue #12).
+        // Whether this resolves decides which of the three branches below the
+        // dialog draws: not accepted, in progress, or ready to hand in.
         this.playerQuest = QuestsHelper.progress(this.panel._currentPlayer.player_data.quests, quest_id) ?? false;
 
         // is quest completed

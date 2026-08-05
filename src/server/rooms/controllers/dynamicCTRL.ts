@@ -72,13 +72,19 @@ export class dynamicCTRL {
         }
     }
 
+    // Issue #12 read this as a dead gate: `quests` is a MapSchema and this
+    // indexed it with brackets, which by the declared type is `undefined` and
+    // would have put every quest reward below out of reach. It was not dead.
+    // `@colyseus/schema` installs a Proxy in the decorated field's setter that
+    // forwards an unknown property to `.get()`, so the brackets resolved. The
+    // cycle is driven end to end in `dynamicCTRL.test.ts` now, which is what
+    // settled the question.
+    //
+    // `.get()` regardless: it is what the type offers, what the rest of this
+    // file uses, and it does not depend on a dependency's internals. The rule
+    // itself sits next to the client's copy of it, because the two have to
+    // agree on when a quest can be handed in.
     isQuestReadyToComplete(quest: Quest) {
-        // `quests` is a MapSchema, so reading it with brackets came back
-        // undefined every time and this returned false for every quest anybody
-        // ever took, which put the whole reward block below out of reach
-        // (issue #12). The rule itself now sits next to the client's copy of
-        // it: the two have to agree on when a quest can be handed in, and
-        // before this they only agreed on being wrong.
         return QuestsHelper.isReadyToComplete(quest, QuestsHelper.progress(this._player.player_data.quests, quest.key));
     }
 

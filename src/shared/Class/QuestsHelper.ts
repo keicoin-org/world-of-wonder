@@ -32,11 +32,12 @@ export class QuestsHelper {
     /**
      * A player's progress on one quest, or `undefined` if they never took it.
      *
-     * `player_data.quests` is a `MapSchema` — a `Map`, not an object — on both
-     * sides of the wire. `quests[key]` compiles, because `strict` is off in
-     * this repo, and evaluates to `undefined` forever. That is what made every
-     * quest in the game impossible to hand in and impossible to see the
-     * progress of (issue #12). Four call sites had it; they now share this one.
+     * `player_data.quests` is a `MapSchema`, and the four call sites that used
+     * to do this read it as `quests[key]`. That works — `@colyseus/schema`
+     * installs a `Proxy` in the decorated field's setter that forwards an
+     * unknown property to `.get()` — but it works by accident of a dependency's
+     * internals rather than by anything the type says, and it only type-checks
+     * because `strict` is off. `MapSchema` declares `get()`; use it.
      */
     public static progress(quests, key: string): QuestProgress | undefined {
         if (!quests || !key) {
@@ -48,9 +49,10 @@ export class QuestsHelper {
     /**
      * Whether a quest can be handed in right now.
      *
-     * The server pays out on this and the client draws the hand-in dialog on
-     * it, so the two used to be the same twelve lines written twice — and both
-     * copies were broken in the same way. One copy, one bug, one fix.
+     * The server pays out on this and the client decides whether to draw a
+     * hand-in button on it, so it was the same rule written twice. If the
+     * client's copy ever says yes where the server's says no, the player gets
+     * a button that silently does nothing.
      *
      * `quest` is the definition out of `QuestsDB`; `progress` is what the
      * player has done. A quest already handed in (`status` 1) is not ready
