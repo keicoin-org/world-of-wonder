@@ -89,6 +89,16 @@ const post = async (path: string) => {
   return { status: response.status, body: await response.json() }
 }
 
+/**
+ * The board, or an empty one if the hall did not answer with a board at all.
+ *
+ * Not defensive padding. A poisoned roster does not produce an empty hall in this
+ * SDK version — `market.offers({ from })` throws on the first unparseable
+ * address, so `GET /kei/hall` answers 502 and `listings` is absent. Reading
+ * through that would crash this file instead of reporting which assertion broke.
+ */
+const listings = (body: any): any[] => (Array.isArray(body?.listings) ? body.listings : [])
+
 const catalogue = economy.catalogue()
 const sword = catalogue.items.find((item) => item.key === 'sword_01')!
 
@@ -114,8 +124,8 @@ check('a real address is accepted', announced.status === 200, JSON.stringify(ann
 const board = await get('/kei/hall')
 check(
   'and the hall shows their sword',
-  board.body.listings.some((entry: any) => entry.hash === offer.hash),
-  `${board.body.listings.length} listing(s)`,
+  listings(board.body).some((entry) => entry.hash === offer.hash),
+  `${listings(board.body).length} listing(s)`,
 )
 
 //////////////////////////////////////////////////
@@ -137,14 +147,21 @@ for (const address of flood) {
 }
 check('POST /kei/hall/watch refuses all 128', accepted === 0, `${accepted} accepted`)
 
-// The check the issue is actually about. The roster holds 128 and evicts the
-// oldest, so under the old validator this read came back empty and every seller
-// in the world was invisible until they reloaded.
+// The checks the issue is actually about. The roster holds 128 and evicts the
+// oldest, so under the old validator these 128 replaced the seller entirely.
+//
+// Worth recording what that produced, because it is worse than the issue
+// predicted: it expected an empty board, on the basis that the SDK's market walk
+// skips an address it cannot parse. This SDK version throws instead, so the
+// poisoned roster made `GET /kei/hall` answer 502 to every player rather than
+// answering with nothing — and `watch()` drops the read cache, so there was no
+// stale board left to fall back on either.
 const afterFlood = await get('/kei/hall')
+check('the hall still answers after the flood', afterFlood.status === 200, `${afterFlood.status}`)
 check(
   'the seller is still on the board after the flood',
-  afterFlood.body.listings.some((entry: any) => entry.hash === offer.hash),
-  `${afterFlood.body.listings.length} listing(s)`,
+  listings(afterFlood.body).some((entry) => entry.hash === offer.hash),
+  `${listings(afterFlood.body).length} listing(s)`,
 )
 check('and nothing was added to the roster', afterFlood.body.accounts === 1, `${afterFlood.body.accounts} account(s)`)
 
@@ -232,8 +249,8 @@ check('all 128 are accepted, because they are addresses', refused === 0, `${refu
 const evicted = await get('/kei/hall')
 check(
   'KNOWN, NOT FIXED: 128 valid addresses still evict the seller from a 128-entry roster',
-  evicted.body.listings.every((entry: any) => entry.hash !== offer.hash),
-  `${evicted.body.listings.length} listing(s), ${evicted.body.accounts} account(s)`,
+  evicted.status === 200 && listings(evicted.body).every((entry) => entry.hash !== offer.hash),
+  `${listings(evicted.body).length} listing(s), ${evicted.body.accounts} account(s)`,
 )
 
 economy.close()
