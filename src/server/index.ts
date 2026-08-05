@@ -11,6 +11,7 @@ import { ChatRoom } from "./rooms/ChatRoom";
 
 import { Api } from "./Api";
 import { Database } from "./Database";
+import { describeOrigins, originAllowed, readAllowedOrigins } from "./Origins";
 
 import { startEconomy, type Economy } from "./kei/Economy";
 import { mountEconomyApi } from "./kei/api";
@@ -134,7 +135,31 @@ class GameServer {
         //////////////////////////////////////////////////
         const port = this.config.port;
         const app = express();
-        app.use(cors());
+
+        // Which pages may call this server, rather than all of them (issue #22).
+        //
+        // Read before anything is mounted so a misspelt entry stops the server
+        // here, where it says so, instead of turning into a CORS error in
+        // somebody's console a week later.
+        //
+        // `credentials` is off, and that is a statement rather than a default:
+        // no route on this server is authorized by anything a browser attaches
+        // on its own. There are no session cookies, the login token is put in
+        // the request by the client that holds it, and an order is authorized by
+        // the unguessable id `/kei/order` handed back (issue #13). So there is
+        // nothing here for a cross-site request to ride on, and asking browsers
+        // to send credentials would be inventing the problem.
+        const allowedOrigins = readAllowedOrigins(process.env);
+        app.use(
+            cors((request, done) => {
+                done(null, {
+                    origin: originAllowed(request.headers.origin, request.headers.host, allowedOrigins),
+                    credentials: false,
+                    methods: ["GET", "POST"],
+                });
+            })
+        );
+        Logger.info("[cors] " + describeOrigins(allowedOrigins));
         app.use(express.json());
 
         // The player's wallet lives in their browser and signs its own blocks,
