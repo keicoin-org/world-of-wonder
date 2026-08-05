@@ -1,6 +1,7 @@
 {
     "name": "world-of-wonder",
     "version": "0.1.0",
+    "private": true,
     "repository": {
         "url": "git+https://github.com/keicoin-org/world-of-wonder.git"
     },
