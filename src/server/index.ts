@@ -18,6 +18,7 @@ import { mountNodeRpc, openStartupChain } from "./kei/node";
 import { openInventoryAuthority, proofUnavailable, useInventoryAuthority } from "./kei/Inventory";
 
 import Logger from "./utils/Logger";
+import { keepProcessAlive, mountFailsafeResponder } from "./utils/Failsafe";
 import { Config } from "../shared/Config";
 
 import "dotenv/config";
@@ -115,6 +116,21 @@ class GameServer {
             gameServer.simulateLatency(250);
         }
 
+        // The net goes on here, and the position in this function is the whole
+        // argument for it.
+        //
+        // Everything above this line is startup, and startup is supposed to be
+        // fatal: `openStartupChain()` refuses rather than warns when the issuer
+        // seed is missing, and that refusal reaches the process as an unhandled
+        // rejection out of `init()`. A guard installed at the top of this file
+        // would catch it and leave the server running without an issuer — turning
+        // a fail-closed check into a fail-open one. Below this line there are
+        // players connected, and the trade reverses: one request without an
+        // answer is a much smaller loss than every room in the world.
+        //
+        // Do not move it earlier. `Failsafe.ts` argues the rest.
+        keepProcessAlive();
+
         // listen
         gameServer.listen(port).then(() => {
             // server is now running
@@ -146,6 +162,14 @@ class GameServer {
         /////////////////////////////////////////////////
 
         this.api = new Api(app, this.database);
+
+        // Last, because Express dispatches error middleware in the order it was
+        // added and one registered before a route never sees that route's errors.
+        // This is what `guardRoute` hands a rejection to, and it is also the only
+        // thing standing between a failed `res.sendFile` and Express's own default
+        // handler, which writes the stack trace into the response body whenever
+        // NODE_ENV is not "production".
+        mountFailsafeResponder(app);
     }
 }
 

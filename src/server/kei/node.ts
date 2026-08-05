@@ -7,6 +7,7 @@
 
 import { Kei, MockNode, mockRpcHandler, type KeiNode } from 'kei-transaction'
 import Logger from '../utils/Logger'
+import { guardRoute } from '../utils/Failsafe'
 
 /** What `KEI_NETWORK` accepts. The SDK's own spelling, passed straight through. */
 export type Network = 'testnet' | 'mainnet' | 'mock'
@@ -120,8 +121,13 @@ export function mountNodeRpc(app: any, mock: MockNode): void {
     response.send(text)
   }
 
-  app.post('/rpc', handle)
-  app.options('/rpc', handle)
+  // Guarded for the same reason every route in Api.ts is: this is an `async`
+  // handler on an unauthenticated route, and Express 4 turns a rejection out of
+  // one into an unhandled rejection rather than a 500 (issue #17). The SDK's
+  // handler answers malformed RPC with an error body rather than throwing, so
+  // this is the net rather than a known crash — but the net is one line.
+  app.post('/rpc', guardRoute(handle))
+  app.options('/rpc', guardRoute(handle))
   Logger.info('[kei] mock node served at /rpc')
 }
 
