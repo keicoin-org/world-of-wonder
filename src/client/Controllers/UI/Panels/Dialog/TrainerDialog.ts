@@ -81,7 +81,10 @@ export class TrainerDialog {
     }
 
     playerHasAbility(ability) {
-        return this.panel._currentPlayer.player_data.abilities[ability.key] ? true : false;
+        // `abilities` is a MapSchema and this used to read it with brackets, so
+        // it answered no for every ability the player already knew and the
+        // trainer kept offering to teach them again (issue #12).
+        return this.panel._currentPlayer.player_data.abilities.get(ability.key) ? true : false;
     }
 
     create(abilities) {

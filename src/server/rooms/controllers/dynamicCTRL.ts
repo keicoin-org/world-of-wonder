@@ -1,4 +1,5 @@
 import { Leveling } from "../../../shared/Class/Leveling";
+import { QuestsHelper } from "../../../shared/Class/QuestsHelper";
 import { Quest, QuestObjective, QuestStatus, QuestUpdate, ServerMsg } from "../../../shared/types";
 import { BrainSchema, PlayerSchema, QuestSchema } from "../schema";
 import { GameRoomState } from "../state/GameRoomState";
@@ -72,13 +73,13 @@ export class dynamicCTRL {
     }
 
     isQuestReadyToComplete(quest: Quest) {
-        let pQuest = this._player.player_data.quests[quest.key];
-        if (quest && pQuest) {
-            if (quest.type === QuestObjective.KILL_AMOUNT && pQuest.qty >= quest.quantity && pQuest.status === 0) {
-                return true;
-            }
-        }
-        return false;
+        // `quests` is a MapSchema, so reading it with brackets came back
+        // undefined every time and this returned false for every quest anybody
+        // ever took, which put the whole reward block below out of reach
+        // (issue #12). The rule itself now sits next to the client's copy of
+        // it: the two have to agree on when a quest can be handed in, and
+        // before this they only agreed on being wrong.
+        return QuestsHelper.isReadyToComplete(quest, QuestsHelper.progress(this._player.player_data.quests, quest.key));
     }
 
     questUpdate(data: QuestUpdate) {
@@ -99,8 +100,10 @@ export class dynamicCTRL {
             // check is quest in complete
             if (!this.isQuestReadyToComplete(quest)) return false;
 
-            // find player quest
-            let playerQuest = this._player.player_data.quests.get(data.key);
+            // Looked up by the key the server resolved, not the one the message
+            // carried, for the same reason the rewards are. `isQuestReadyToComplete`
+            // has already established this is present.
+            let playerQuest = this._player.player_data.quests.get(quest.key);
 
             // experience
             let experienceReward = quest.rewards.experience ?? 0;

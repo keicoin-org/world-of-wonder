@@ -93,14 +93,11 @@ export class Player extends Entity {
         return pointerInfo._pickInfo.pickedMesh.metadata;
     }
 
+    // Right click does nothing yet. It used to look an entity up out of
+    // `this.entities` — a `Map`, indexed with brackets, so `undefined` — and
+    // then drop the result on the floor, which read like a feature (issue #12).
     public rightClick(pointerInfo) {
-        let metadata = this.getMeshMetadata(pointerInfo);
-
-        if (!metadata) return false;
-
-        if (metadata.type === "entity") {
-            let target = this.entities[metadata.sessionId];
-        }
+        return false;
     }
 
     // process left click for player

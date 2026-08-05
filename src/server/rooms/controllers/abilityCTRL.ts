@@ -32,8 +32,13 @@ export class abilitiesCTRL {
             return false;
         }
 
-        // only proceed if the ability does not already
-        if (!this._owner.player_data.abilities[ability.key]) {
+        // Only proceed if the player does not already know it. `abilities` is a
+        // MapSchema, so the bracket read this used to do was undefined every
+        // time and the guard let everything through — the same mistake as the
+        // quest one in `dynamicCTRL`, but failing open instead of closed:
+        // re-learning burned a fresh hotbar slot per visit until the bar was
+        // full of one ability (issue #12).
+        if (!this._owner.player_data.abilities.get(ability.key)) {
             // add ability to player
             this._owner.player_data.abilities.set(
                 ability.key,

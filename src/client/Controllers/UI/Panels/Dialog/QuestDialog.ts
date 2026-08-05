@@ -2,7 +2,7 @@ import { StackPanel } from "@babylonjs/gui/2D/controls/stackPanel";
 import { TextBlock, TextWrapping } from "@babylonjs/gui/2D/controls/textBlock";
 import { Panel_Dialog } from "../..";
 import { Button } from "@babylonjs/gui/2D/controls/button";
-import { Quest, QuestObjective, QuestObjectiveMap, QuestStatus, ServerMsg } from "../../../../../shared/types";
+import { Quest, QuestObjectiveMap, QuestStatus, ServerMsg } from "../../../../../shared/types";
 import { QuestsHelper } from "../../../../../shared/Class/QuestsHelper";
 import { Control } from "@babylonjs/gui/2D/controls/control";
 import { GameController } from "../../../GameController";
@@ -48,7 +48,11 @@ export class QuestDialog {
         this.currentLocation = this.panel._game.getGameData("location", this.currentQuest.location);
 
         // get player quest
-        this.playerQuest = this.panel._currentPlayer.player_data.quests[quest_id] ?? false;
+        // Read with brackets this was undefined for every quest the player had
+        // ever accepted, so the dialog only ever drew its "not accepted yet"
+        // branch — there was no way to reach the hand-in button from the UI at
+        // all, and no way to see a kill count (issue #12).
+        this.playerQuest = QuestsHelper.progress(this.panel._currentPlayer.player_data.quests, quest_id) ?? false;
 
         // is quest completed
         this.questReadyToComplete = this.isQuestReadyToComplete();
@@ -346,12 +350,10 @@ export class QuestDialog {
         return text;
     }
 
+    // Shares its rule with the server's `dynamicCTRL.isQuestReadyToComplete()`.
+    // If this one says yes and that one says no, the player is shown a hand-in
+    // button that silently does nothing.
     public isQuestReadyToComplete() {
-        if (this.playerQuest && this.currentQuest) {
-            if (this.currentQuest.type === QuestObjective.KILL_AMOUNT && this.playerQuest.qty >= this.currentQuest.quantity && this.playerQuest.status === 0) {
-                return true;
-            }
-        }
-        return false;
+        return QuestsHelper.isReadyToComplete(this.currentQuest, this.playerQuest || undefined);
     }
 }
