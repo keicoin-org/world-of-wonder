@@ -21,6 +21,7 @@ import { Kei, type IssuerToken, type Item } from 'kei-transaction'
 import type { KeiNode } from 'kei-transaction'
 
 import { openHall, type Hall } from './Hall'
+import { reconcileAgainst, type Issuance } from './Outbox'
 import { ItemsDB } from '../data/ItemDB'
 import type { Item as ItemData } from '../../shared/types'
 import Logger from '../utils/Logger'
@@ -133,6 +134,15 @@ export interface Economy {
    * with each other there, and this account takes no side in it (SPEC §9.2).
    */
   hall: Hall
+  /**
+   * The narrow issuing surface `kei/Outbox.ts` delivers rewards through.
+   *
+   * Separate from `grant`/`deliver` because durable delivery needs three things
+   * those two cannot give it: raw units as a string rather than a `number`, the
+   * hash of the block that paid, and a way to find that block again after a
+   * timeout that told us nothing.
+   */
+  issuance: Issuance
   catalogue(): CataloguePayload
   /** Take an order, so an anonymous coin transfer can be matched to a purchase. */
   order(player: string, key: string, qty?: number): Promise<OrderTicket>
@@ -410,9 +420,47 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
     })()
   })
 
+  /** Which token pays a reward leg. Gold is the currency; anything else is an archetype. */
+  const tokenFor = (kind: 'gold' | 'item', key: string) => (kind === 'gold' ? gold : itemTokens.get(key))
+
   return {
     address: kei.address,
     hall,
+
+    issuance: {
+      issuer: kei.address,
+
+      assetFor(kind, key) {
+        if (kind === 'gold') return key === COIN.symbol ? gold.id : undefined
+        return items.get(key)?.id
+      },
+
+      nameFor(kind, key) {
+        if (kind === 'gold') return COIN.name
+        // The chain carries the name, so a player never has to be shown an
+        // asset id (SPEC §7). `ItemsDB` is where that name came from.
+        return (ItemsDB[key] as ItemData | undefined)?.title ?? key
+      },
+
+      async frontier() {
+        const info = await kei.client.node.accountInfo(kei.address)
+        if (!info) throw new Error(`The node does not know this world's issuer, ${kei.address}.`)
+        return info.frontier
+      },
+
+      async mint(kind, key, to, units) {
+        const token = tokenFor(kind, key)
+        if (!token) throw new Error(`This world does not issue "${key}".`)
+        // The string goes through untouched. `mint()` takes `number | string`
+        // and the number half is the lossy one.
+        const { hash } = await token.mint(to, units)
+        return { hash }
+      },
+
+      reconcile(previous, expected) {
+        return reconcileAgainst(kei.client.node, kei.address, previous, expected)
+      },
+    },
 
     catalogue() {
       return {

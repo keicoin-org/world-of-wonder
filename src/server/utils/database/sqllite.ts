@@ -89,4 +89,26 @@ export class DB_SQLLITE {
             });
         });
     }
+
+    // How many rows a statement actually touched, which `run()` cannot say
+    // because it returns the insert id instead.
+    //
+    // This is the compare-and-swap the reward outbox claims work with: an UPDATE
+    // whose WHERE clause names the state it expects, and a count of 1 meaning
+    // this process was the one that changed it (src/server/kei/Outbox.ts).
+    // Reading a row and then writing it would let two workers mint the same
+    // reward, and neither adapter here has a transaction to prevent that.
+    async change(sql: string, params = []): Promise<number> {
+        return new Promise((resolve, reject) => {
+            this.db.run(sql, params, function (err: any) {
+                if (err) {
+                    console.log("Error running sql " + sql);
+                    console.log(err);
+                    reject(err);
+                } else {
+                    resolve(this.changes);
+                }
+            });
+        });
+    }
 }

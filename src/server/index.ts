@@ -16,6 +16,7 @@ import { startEconomy, type Economy } from "./kei/Economy";
 import { mountEconomyApi } from "./kei/api";
 import { mountNodeRpc, openStartupChain } from "./kei/node";
 import { openInventoryAuthority, proofUnavailable, useInventoryAuthority } from "./kei/Inventory";
+import { openOutbox } from "./kei/Outbox";
 
 import Logger from "./utils/Logger";
 import { keepProcessAlive, mountFailsafeResponder } from "./utils/Failsafe";
@@ -72,19 +73,61 @@ class GameServer {
         // check, every authorization below refuses, loot and quest rewards go
         // unpaid rather than into a database, and the old tables sit untouched.
         // That is the safety mode, and it is deliberately the loud kind.
-        useInventoryAuthority(
-            openInventoryAuthority({
-                economy: this.economy,
-                verify: proofUnavailable,
-                payments: {
-                    paid: (id) => this.database.hasPaidReward(id),
-                    record: (entry) => this.database.recordRewardPayment(entry),
-                },
-            })
-        );
+        const authority = openInventoryAuthority({
+            economy: this.economy,
+            verify: proofUnavailable,
+            payments: {
+                paid: (id) => this.database.hasPaidReward(id),
+                record: (entry) => this.database.recordRewardPayment(entry),
+            },
+        });
+        useInventoryAuthority(authority);
         Logger.warning(
             "[kei] wallet-session proof is not built yet, so no character is bound to an address: loot, quest rewards and pickups are refused rather than written to the database (issue #6)"
         );
+
+        // The durable half of paying a reward (issue #9). Nothing enqueues into it
+        // yet — loot, quests, and equipment still go through
+        // `InventoryAuthority.pay()`, which is at-most-once and gives up quietly —
+        // so what this does today is run the queue, the reconciler, and the
+        // retention sweep against an empty table where they can be watched.
+        //
+        // Delivery is off unless a deployment turns it on. That is the sequencing
+        // issue #9 asks for: the workers and the reconciliation ship, get observed
+        // making no chain writes, and become the rollback floor before anything is
+        // allowed to sign a mint.
+        const outbox = openOutbox({
+            store: this.database.rewardStore(),
+            issuance: this.economy.issuance,
+            // Asked at delivery, never stored from a client. A reward written down
+            // while nobody could prove a wallet is paid once somebody can.
+            addressOf: (characterId) => authority.addressOf(characterId),
+            deliver: process.env.KEI_REWARD_DELIVERY === "on",
+        });
+
+        // On MySQL every gameplay table is dropped and recreated on boot, so
+        // `characters.id` starts again at 1 while the outbox survives. A reward id
+        // names a character by that id, so a row from before this restart may
+        // belong to a character that no longer exists — or, worse, to a different
+        // one that now answers to the same number. Neither is deliverable, so they
+        // all stop and wait for a person rather than being paid to whoever
+        // inherited the id (issue #9).
+        if (this.config.database === "mysql") {
+            const held = await outbox.quarantine(
+                "This reward was authored before the character table was recreated, so who it belongs to can no longer be established."
+            );
+            if (held > 0) Logger.warning(`[outbox] held ${held} rewards: character ids were reused by this restart`);
+        }
+
+        const rewardTicker = setInterval(() => {
+            void outbox.drain().catch((error) => Logger.error("[outbox] a delivery pass failed", error));
+        }, 5_000);
+        const rewardSweeper = setInterval(() => {
+            void outbox.compact().catch((error) => Logger.error("[outbox] compaction failed", error));
+        }, 60_000);
+        // Nothing here should hold the process open on its own.
+        rewardTicker.unref?.();
+        rewardSweeper.unref?.();
 
         //////////////////////////////////////////////////
         ///////////// COLYSEUS GAME SERVER ///////////////

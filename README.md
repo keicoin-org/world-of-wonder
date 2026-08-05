@@ -198,12 +198,14 @@ mint the currency being traded.
 ```
 src/server/kei/Economy.ts       the issuer: gold, items, the shop. Read this one.
 src/server/kei/Inventory.ts     what the room is allowed to ask about ownership, and what it is refused
+src/server/kei/Outbox.ts        rewards written down before they are delivered, and reconciled after
 src/server/kei/Legacy.ts        the old database bag, kept and never acted on
 src/server/kei/Hall.ts          the auction house's list of chains to read. It signs nothing.
 src/server/kei/api.ts           the HTTP surface. Nothing here can move a player's money.
 src/server/kei/node.ts          which chain, and which account issues the money
 src/server/kei/Economy.test.ts  the rules, against a chain in-process
 src/server/kei/Inventory.test.ts the boundary: a SQLite row owns nothing, and a reward pays once
+src/server/kei/Outbox.test.ts   a reward interrupted at every step, and paid exactly once anyway
 src/server/kei/Market.test.ts   two players trading, with this server on neither leg
 src/server/kei/endtoend.test.ts the same things across a URL, the way a browser does it
 src/server/rooms/state/GameRoomState.ts       every message the room answers, and what none of them may cause
@@ -351,10 +353,34 @@ variable. A host that assigns you a port expects that file to be edited.
      the signature — is a `ProofVerifier` parameter waiting for a function.
   2. **Loot, quest payouts, and pickups start paying.** These are already
      written and tested; they refuse only because step 1 has not happened.
-     This is not a backlog: a quest completed while proof is unavailable stays
-     complete and permanently unpaid. Payment ids prevent duplicate minting;
-     they do not provide eventual delivery or retroactive payout, which needs a
-     separate durable retry/backfill design before wallet binding ships.
+
+     They refuse *and forget*, which is the part worth being precise about.
+     `InventoryAuthority.pay()` is at-most-once: a payment id is recorded before
+     anything is minted, so a reward is never issued twice. At-most-once is not
+     delivery. A quest completed today is marked complete, refused, and leaves
+     nothing durable behind, so enabling step 1 later pays nothing for it.
+
+     [`src/server/kei/Outbox.ts`](src/server/kei/Outbox.ts) is the mechanism that
+     closes that, and it is merged. A reward is written down before it is
+     delivered and stays written down until every leg of it has a chain block
+     behind it, so one authored while no wallet could be proved is paid once one
+     can, without the client re-sending anything. An ambiguous chain timeout is
+     reconciled by block identity — the issuer's frontier is recorded before the
+     mint, an account chain is linear and single-writer, so whatever occupies that
+     position afterwards is the answer — and never by reading a balance, which
+     players are free to change themselves. Retention is `compact()`: a settled
+     reward loses its legs and payload after a week, one whose id ordinary play
+     could not author again loses its row too, and the rest keep an empty row,
+     which bounds the leftovers by characters times quests rather than by
+     playtime. Pending and held work is never swept and is counted in one log
+     line so a backlog is visible.
+
+     What is open is the wiring. Nothing enqueues into the outbox yet: loot,
+     quests, and equipment still go through `pay()`, and delivery is off unless
+     `KEI_REWARD_DELIVERY=on`. The completions already refused under phase one
+     have no reward row to derive a payload from and are forfeited — the honest
+     way to recover a development one is to run the quest again. Issue #6 tracks
+     moving each producer onto the outbox.
   3. **Equipping and consuming a chain-owned item.** The room needs to load a
      proven wallet's holdings into `player_data.inventory` on join and
      revalidate before each use, and `PLAYER_USE_ITEM` needs to take an item key

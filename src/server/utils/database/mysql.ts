@@ -72,4 +72,18 @@ export class DB_MYSQL {
         let resultJson = JSON.parse(JSON.stringify(result));
         return resultJson.insertId;
     }
+
+    // How many rows a statement actually touched. See the same method on
+    // DB_SQLLITE for why the reward outbox needs it rather than a read and a
+    // write. `affectedRows` counts rows the WHERE clause matched, which is the
+    // number a compare-and-swap is asking about.
+    async change(sql: string, params: {} | [] = []): Promise<number> {
+        let [result] = await this.db.execute(sql, params, function (err: any) {
+            if (err) {
+                console.log("Error running sql " + sql);
+                console.log(err);
+            }
+        });
+        return JSON.parse(JSON.stringify(result)).affectedRows ?? 0;
+    }
 }
