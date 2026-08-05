@@ -81,7 +81,9 @@ export class TrainerDialog {
     }
 
     playerHasAbility(ability) {
-        return this.panel._currentPlayer.player_data.abilities[ability.key] ? true : false;
+        // `abilities` is a MapSchema; read it as one. See the note in
+        // `dynamicCTRL.isQuestReadyToComplete()` (issue #12).
+        return this.panel._currentPlayer.player_data.abilities.get(ability.key) ? true : false;
     }
 
     create(abilities) {

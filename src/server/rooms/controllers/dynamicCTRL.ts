@@ -1,4 +1,5 @@
 import { Leveling } from "../../../shared/Class/Leveling";
+import { QuestsHelper } from "../../../shared/Class/QuestsHelper";
 import { Quest, QuestObjective, QuestStatus, QuestUpdate, ServerMsg } from "../../../shared/types";
 import { BrainSchema, PlayerSchema, QuestSchema } from "../schema";
 import { GameRoomState } from "../state/GameRoomState";
@@ -71,14 +72,20 @@ export class dynamicCTRL {
         }
     }
 
+    // Issue #12 read this as a dead gate: `quests` is a MapSchema and this
+    // indexed it with brackets, which by the declared type is `undefined` and
+    // would have put every quest reward below out of reach. It was not dead.
+    // `@colyseus/schema` installs a Proxy in the decorated field's setter that
+    // forwards an unknown property to `.get()`, so the brackets resolved. The
+    // cycle is driven end to end in `dynamicCTRL.test.ts` now, which is what
+    // settled the question.
+    //
+    // `.get()` regardless: it is what the type offers, what the rest of this
+    // file uses, and it does not depend on a dependency's internals. The rule
+    // itself sits next to the client's copy of it, because the two have to
+    // agree on when a quest can be handed in.
     isQuestReadyToComplete(quest: Quest) {
-        let pQuest = this._player.player_data.quests[quest.key];
-        if (quest && pQuest) {
-            if (quest.type === QuestObjective.KILL_AMOUNT && pQuest.qty >= quest.quantity && pQuest.status === 0) {
-                return true;
-            }
-        }
-        return false;
+        return QuestsHelper.isReadyToComplete(quest, QuestsHelper.progress(this._player.player_data.quests, quest.key));
     }
 
     questUpdate(data: QuestUpdate) {
@@ -99,8 +106,10 @@ export class dynamicCTRL {
             // check is quest in complete
             if (!this.isQuestReadyToComplete(quest)) return false;
 
-            // find player quest
-            let playerQuest = this._player.player_data.quests.get(data.key);
+            // Looked up by the key the server resolved, not the one the message
+            // carried, for the same reason the rewards are. `isQuestReadyToComplete`
+            // has already established this is present.
+            let playerQuest = this._player.player_data.quests.get(quest.key);
 
             // experience
             let experienceReward = quest.rewards.experience ?? 0;

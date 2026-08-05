@@ -14,12 +14,8 @@
  * a counter, and what is being checked is who called it.
  */
 
-import { GameRoomState } from "./GameRoomState";
-import { entityCTRL } from "../controllers/entityCTRL";
-import { spawnCTRL } from "../controllers/spawnCTRL";
-import { LootSchema, PlayerSchema } from "../schema";
-import { GameData } from "../../GameData";
-import { Config } from "../../../shared/Config";
+import { openTestRoom } from "./TestRoom";
+import { LootSchema } from "../schema";
 import { ServerMsg } from "../../../shared/types";
 import { useInventoryAuthority, type InventoryAuthority } from "../../kei/Inventory";
 import Logger from "../../utils/Logger";
@@ -72,61 +68,8 @@ Logger.warning = (message: any, data: any = []) => {
 // One room, one player, and a location with no spawns of its own so that every
 // entity in the room got there because something in this file put it there.
 
-const LOCATION = { key: "test_room", title: "Test Room", dynamic: { spawns: [], interactive: [] } };
+const { state, location: LOCATION, client, player, sent } = openTestRoom({ character: CHARACTER });
 
-const gameData = {
-    get: (type: string, key: string) => (type === "location" ? (key === LOCATION.key ? LOCATION : false) : GameData.get(type, key)),
-    load: (type: string) => GameData.load(type),
-};
-
-const sent: { type: number; message: any }[] = [];
-
-const client: any = {
-    sessionId: "session-1",
-    auth: {
-        id: CHARACTER,
-        name: "Tester",
-        race: "humanoid",
-        material: 0,
-        head: "Head_Base",
-        location: LOCATION.key,
-        x: 0,
-        y: 0,
-        z: 0,
-        rot: 0,
-        health: 100,
-        mana: 100,
-        level: 1,
-        abilities: [],
-        quests: [],
-        hotbar: [],
-    },
-    send: (type: number, message: any) => sent.push({ type, message }),
-};
-
-const room: any = {
-    roomId: "test",
-    metadata: { location: LOCATION.key },
-    config: new Config(),
-    navMesh: { getRandomRegion: () => ({ centroid: { x: 0, y: 0, z: 0 } }) },
-    clients: { getById: (sessionId: string) => (sessionId === client.sessionId ? client : undefined) },
-    database: { toggleOnlineStatus: () => {} },
-};
-
-/** `init()` reads the game data over HTTP from a running server. This does not. */
-class TestRoomState extends GameRoomState {
-    public async init() {
-        this.gameData = gameData as any;
-        this.roomDetails = LOCATION;
-        this.entityCTRL = new entityCTRL(this);
-        this.spawnCTRL = new spawnCTRL(this);
-    }
-}
-
-const state = new TestRoomState(room, room.navMesh, {});
-state.addPlayer(client);
-
-const player = state.getEntity(client.sessionId) as PlayerSchema;
 const loot = () => [...state.entities.values()].filter((entity) => entity instanceof LootSchema);
 
 check("the room has one player and nothing else", state.entities.size === 1 && loot().length === 0);

@@ -5,6 +5,7 @@ import { TextBlock, TextWrapping } from "@babylonjs/gui/2D/controls/textBlock";
 import { Button } from "@babylonjs/gui/2D/controls/button";
 import { StackPanel } from "@babylonjs/gui/2D/controls/stackPanel";
 import { UserInterface } from "../../UserInterface";
+import { QuestsHelper } from "../../../../shared/Class/QuestsHelper";
 
 import { TrainerDialog } from "./Dialog/TrainerDialog";
 import { VendorDialog } from "./Dialog/VendorDialog";
@@ -112,7 +113,9 @@ export class Panel_Dialog extends Panel {
         if (currentDialog.quests) {
             let q = 1;
             currentDialog.quests.forEach((btn: any) => {
-                let playerQuest = this._currentPlayer.player_data.quests[btn.key] ?? false;
+                // Whether this resolves decides if a finished quest keeps
+                // offering itself with an orange "!".
+                let playerQuest = QuestsHelper.progress(this._currentPlayer.player_data.quests, btn.key) ?? false;
 
                 if (playerQuest && playerQuest.status === 1) return false;
 

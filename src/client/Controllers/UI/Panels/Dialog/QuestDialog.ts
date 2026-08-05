@@ -2,7 +2,7 @@ import { StackPanel } from "@babylonjs/gui/2D/controls/stackPanel";
 import { TextBlock, TextWrapping } from "@babylonjs/gui/2D/controls/textBlock";
 import { Panel_Dialog } from "../..";
 import { Button } from "@babylonjs/gui/2D/controls/button";
-import { Quest, QuestObjective, QuestObjectiveMap, QuestStatus, ServerMsg } from "../../../../../shared/types";
+import { Quest, QuestObjectiveMap, QuestStatus, ServerMsg } from "../../../../../shared/types";
 import { QuestsHelper } from "../../../../../shared/Class/QuestsHelper";
 import { Control } from "@babylonjs/gui/2D/controls/control";
 import { GameController } from "../../../GameController";
@@ -48,7 +48,9 @@ export class QuestDialog {
         this.currentLocation = this.panel._game.getGameData("location", this.currentQuest.location);
 
         // get player quest
-        this.playerQuest = this.panel._currentPlayer.player_data.quests[quest_id] ?? false;
+        // Whether this resolves decides which of the three branches below the
+        // dialog draws: not accepted, in progress, or ready to hand in.
+        this.playerQuest = QuestsHelper.progress(this.panel._currentPlayer.player_data.quests, quest_id) ?? false;
 
         // is quest completed
         this.questReadyToComplete = this.isQuestReadyToComplete();
@@ -346,12 +348,10 @@ export class QuestDialog {
         return text;
     }
 
+    // Shares its rule with the server's `dynamicCTRL.isQuestReadyToComplete()`.
+    // If this one says yes and that one says no, the player is shown a hand-in
+    // button that silently does nothing.
     public isQuestReadyToComplete() {
-        if (this.playerQuest && this.currentQuest) {
-            if (this.currentQuest.type === QuestObjective.KILL_AMOUNT && this.playerQuest.qty >= this.currentQuest.quantity && this.playerQuest.status === 0) {
-                return true;
-            }
-        }
-        return false;
+        return QuestsHelper.isReadyToComplete(this.currentQuest, this.playerQuest || undefined);
     }
 }

@@ -93,14 +93,13 @@ export class Player extends Entity {
         return pointerInfo._pickInfo.pickedMesh.metadata;
     }
 
+    // Right click does nothing yet, and now says so. It used to resolve the
+    // clicked entity and discard it, which read like a feature that was merely
+    // unfinished — and the lookup was `this.entities[sessionId]` on a plain
+    // `Map`, which unlike a MapSchema has no proxy behind it, so it was
+    // genuinely always undefined (issue #12).
     public rightClick(pointerInfo) {
-        let metadata = this.getMeshMetadata(pointerInfo);
-
-        if (!metadata) return false;
-
-        if (metadata.type === "entity") {
-            let target = this.entities[metadata.sessionId];
-        }
+        return false;
     }
 
     // process left click for player
