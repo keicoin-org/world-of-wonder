@@ -80,14 +80,32 @@ const server = app.listen(0)
 await new Promise((resolve) => server.once('listening', resolve))
 const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
 
-const get = async (path: string) => {
-  const response = await fetch(`${base}${path}`)
-  return { status: response.status, body: await response.json() }
+/**
+ * One request, and a retry if the socket rather than the server said no.
+ *
+ * This file makes ~270 sequential requests, which is enough to run into a
+ * keep-alive socket being reused on one side while the other is closing it —
+ * ECONNRESET, on a loaded machine, in a loop of 128. `connection: close` avoids
+ * reusing sockets at all and the retry covers the rest; a transport hiccup is not
+ * what any assertion here is about, and letting one masquerade as a validator
+ * result would be worse than either.
+ */
+async function request(path: string, method = 'GET'): Promise<{ status: number; body: any }> {
+  let last: unknown
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const response = await fetch(`${base}${path}`, { method, headers: { connection: 'close' } })
+      return { status: response.status, body: await response.json() }
+    } catch (error) {
+      last = error
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+  }
+  throw last
 }
-const post = async (path: string) => {
-  const response = await fetch(`${base}${path}`, { method: 'POST' })
-  return { status: response.status, body: await response.json() }
-}
+
+const get = (path: string) => request(path)
+const post = (path: string) => request(path, 'POST')
 
 /**
  * The board, or an empty one if the hall did not answer with a board at all.
