@@ -19,7 +19,8 @@
         "test:economy": "node scripts/build-server.mjs --entry src/server/kei/Economy.test.ts --out dist/test/economy.mjs && node dist/test/economy.mjs",
         "test:market": "node scripts/build-server.mjs --entry src/server/kei/Market.test.ts --out dist/test/market.mjs && node dist/test/market.mjs",
         "test:inventory": "node scripts/build-server.mjs --entry src/server/kei/Inventory.test.ts --out dist/test/inventory.mjs && node dist/test/inventory.mjs",
-        "test": "npm run test:startup && npm run test:economy && npm run test:market && npm run test:inventory",
+        "test:room": "node scripts/build-server.mjs --entry src/server/rooms/state/GameRoomState.test.ts --out dist/test/room.mjs && node dist/test/room.mjs",
+        "test": "npm run test:startup && npm run test:economy && npm run test:market && npm run test:inventory && npm run test:room",
         "test:e2e": "node scripts/build-server.mjs --entry src/server/kei/endtoend.test.ts --out dist/test/e2e.mjs && node dist/test/e2e.mjs"
     },
     "author": "Orion3d, Kei",

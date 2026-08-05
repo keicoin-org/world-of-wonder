@@ -5,7 +5,6 @@ import { GameController } from "./GameController";
 import { UserInterface } from "./UserInterface";
 import { GameScene } from "../Screens/GameScene";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
-import { ServerMsg } from "../../shared/types";
 
 export class PlayerInput {
     private _gameScene: GameScene;
@@ -163,19 +162,11 @@ export class PlayerInput {
                         this.digit_pressed = 9;
                     }
 
-                    // characters
-                    if (kbInfo.event.code === "KeyJ") {
-                        this._game.sendMessage(ServerMsg.DEBUG_REMOVE_ENTITIES);
-                    }
-                    if (kbInfo.event.code === "NumpadAdd") {
-                        this._game.sendMessage(ServerMsg.DEBUG_INCREASE_ENTITIES);
-                    }
-                    if (kbInfo.event.code === "NumpadSubtract") {
-                        this._game.sendMessage(ServerMsg.DEBUG_DECREASE_ENTITIES);
-                    }
-                    if (kbInfo.event.code === "NumpadEnter") {
-                        this._game.sendMessage(ServerMsg.DEBUG_BOTS);
-                    }
+                    // J, numpad +/- and numpad enter sent the four DEBUG_*
+                    // messages. The room refuses all four now, so the keys did
+                    // nothing except tell anyone reading the bundle which
+                    // messages were worth trying (issue #10).
+
                     if (kbInfo.event.code === "Home") {
                         this._ui._MainMenu.takeScreenshot();
                     }

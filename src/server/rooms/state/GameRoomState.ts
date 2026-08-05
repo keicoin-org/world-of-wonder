@@ -14,6 +14,33 @@ import { ItemClass, ServerMsg, Speed } from "../../../shared/types";
 import { Config } from "../../../shared/Config";
 import { describeLegacy, isEmptyLegacy, quarantineLegacy } from "../../kei/Legacy";
 
+/**
+ * Every message this room answers, and nothing else.
+ *
+ * The room is registered as a single `*` handler running the if-chain below, so
+ * "no branch matched" and "refused" used to be the same thing: a message that
+ * had quietly been taken out — PLAYER_BUY_ITEM, the debug commands — went on
+ * looking exactly like one that was still there and merely silent, and a client
+ * probing for a handler learned as much from a hit as from a miss. Anything not
+ * listed here is refused before the chain runs and the refusal is logged
+ * (issue #10).
+ */
+const HANDLED: ReadonlySet<ServerMsg> = new Set([
+    ServerMsg.PING,
+    ServerMsg.PLAYER_RESSURECT,
+    ServerMsg.PLAYER_RESET_POSITION,
+    ServerMsg.PLAYER_LEARN_SKILL,
+    ServerMsg.PLAYER_ADD_STAT_POINT,
+    ServerMsg.PLAYER_MOVE,
+    ServerMsg.PLAYER_MOVE_TO,
+    ServerMsg.PLAYER_PICKUP,
+    ServerMsg.PLAYER_DROP_ITEM,
+    ServerMsg.PLAYER_USE_ITEM,
+    ServerMsg.PLAYER_UNEQUIP_ITEM,
+    ServerMsg.PLAYER_QUEST_UPDATE,
+    ServerMsg.PLAYER_HOTBAR_ACTIVATED,
+]);
+
 export class GameRoomState extends Schema {
     // networked variables
     /*
@@ -180,6 +207,19 @@ export class GameRoomState extends Schema {
         ////////// SERVER EVENTS ///////////
         ////////////////////////////////////
 
+        // Said out loud, and to the log rather than to the room: a player who
+        // forges a message should not learn from the chat whether they guessed
+        // a real one, and an operator watching a deployment should be able to
+        // see that somebody tried.
+        if (!HANDLED.has(type)) {
+            // Named as it arrived. `ServerMsg` maps both ways, so resolving a
+            // string through it would log the number a forgery was trying to
+            // spell rather than the forgery.
+            const sent = typeof type === "number" ? ServerMsg[type] ?? type : JSON.stringify(type);
+            Logger.warning(`[gameroom][refused] player ${client.sessionId} sent ${sent}, which this room does not accept`);
+            return false;
+        }
+
         if (type !== ServerMsg.PING) {
             Logger.info(`[gameroom][` + ServerMsg[type] + `] player message`, data);
         }
@@ -323,10 +363,13 @@ export class GameRoomState extends Schema {
 
             Logger.warning(`[ServerMsg.PLAYER_HOTBAR_ACTIVATED]`, data.digit);
 
-            if (data.digit === 6) {
-                this.spawnCTRL.createItem(playerState);
-                return false;
-            }
+            // Digit 6 used to drop a random item from the catalogue at the
+            // sender's feet, before the hotbar was even looked at. A ground item
+            // is what `pickupItem()` mints from, so that made a room message the
+            // client controls into the first half of an issuer call: send it,
+            // walk two paces, repeat. It is an ordinary hotbar slot again, and
+            // the only thing that puts loot on the ground is a mob dying
+            // (issue #10).
 
             if (!hotbarData) {
                 return false;
@@ -351,46 +394,13 @@ export class GameRoomState extends Schema {
         /////////
         /////// DEBUG /////////////////
 
-        // debug: add random entities
-        if (type === ServerMsg.DEBUG_BOTS) {
-            this.spawnCTRL.debug_bots();
-        }
-
-        /*
-        if (process.env.NODE_ENV !== "production") {
-            let amountToChange = 100;
-
-            // debug: add 100 entities
-            if (type === ServerMsg.DEBUG_INCREASE_ENTITIES) {
-                this.spawnCTRL.debug_increase(amountToChange);
-            }
-
-            // debug: delete 100 entities
-            if (type === ServerMsg.DEBUG_DECREASE_ENTITIES) {
-                let i = 1;
-                this.spawnCTRL.debug_decrease(amountToChange);
-                this.entities.forEach((entity) => {
-                    if (
-                        entity instanceof BrainSchema &&
-                        entity.AI_SPAWN_INFO &&
-                        (entity.AI_SPAWN_INFO.key === "lh_town_thief" || entity.AI_SPAWN_INFO.key === "lh_town_bandits") &&
-                        i <= amountToChange
-                    ) {
-                        this.spawnCTRL.removeEntity(entity);
-                        i++;
-                    }
-                });
-            }
-        }*/
-
-        if (type === ServerMsg.DEBUG_REMOVE_ENTITIES) {
-            if (this.entityCTRL.hasEntities()) {
-                this.entityCTRL.all.forEach((entity) => {
-                    if (entity.type !== "player") {
-                        this.spawnCTRL.removeEntity(entity);
-                    }
-                });
-            }
-        }
+        // DEBUG_BOTS and DEBUG_REMOVE_ENTITIES were handled here, in every
+        // build, with no check of any kind. Neither minted, but the first
+        // appended a hundred spawn definitions to this location's game data on
+        // every press and nothing ever took them out again, and the second
+        // deleted every non-player entity in the room — which includes loot the
+        // server had authored for somebody else to walk into, so a client could
+        // destroy a reward it did not own. Both are gone; their enum values stay
+        // because the numbering is the wire format (issue #10).
     }
 }
