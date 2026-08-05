@@ -115,6 +115,27 @@ CREATE TABLE IF NOT EXISTS `character_hotbar` (
 );
 
 --
+-- STARTING PURSES
+--
+-- Which addresses have already been given a starting purse, and which character
+-- claimed each one. Not dropped on startup: the purse is a mint, and a record
+-- that a restart forgot would let every character in the world claim a second
+-- one. It holds no balance and authorizes nothing.
+--
+-- Keyed on the address rather than on the character because an address is never
+-- reissued by anything, where a character id is only stable for as long as the
+-- characters table is. It stopped being dropped on boot with issue #21, and the
+-- address key is what would keep this table honest if that ever regressed.
+
+CREATE TABLE IF NOT EXISTS `starting_purses` (
+	`address`		varchar(255) NOT NULL,
+	`owner_id`		int(10),
+	`amount`		int(10),
+	`granted_at`	bigint,
+	PRIMARY KEY (`address`)
+);
+
+--
 -- REWARD PAYMENTS
 --
 -- The record of which server-authored rewards have already been minted on the

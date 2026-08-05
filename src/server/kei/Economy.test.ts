@@ -9,7 +9,8 @@
 
 import { Kei } from 'kei-transaction'
 
-import { startEconomy, STARTING_GOLD } from './Economy'
+import { issuanceCost, startEconomy, STARTING_GOLD } from './Economy'
+import { ItemsDB } from '../data/ItemDB'
 
 const ISSUER_SEED = 'A'.repeat(64)
 const PLAYER_SEED = 'B'.repeat(64)
@@ -35,6 +36,33 @@ const node = await Kei.mock({})
 
 const economy = await startEconomy({ seed: ISSUER_SEED, node, network: 'mock' })
 const player = await Kei.start({ node, seed: PLAYER_SEED })
+
+// --------------------------------------------------------------- issue #24
+//
+// What starting this world costs in Kei, measured rather than asserted about.
+//
+// `startEconomy` drew exactly `issuanceCost(assets)` from the faucet, because it
+// held nothing and that is what it asked for. So whatever is left in the issuer's
+// account afterwards is the gap between what the arithmetic thought issuing costs
+// and what the chain charged for it. It has to be nothing.
+//
+// The number that was here before asked for 10,100 against a real burn of 55, on
+// the strength of a flat 1,000-Kei rule the n-Kei rule had already replaced. A
+// check that only asserted "enough" would have passed on it — this one is the
+// reason the faucet cannot quietly drift again, in either direction.
+const assets = Object.keys(ItemsDB).length + 1
+const issuer = await Kei.server({ seed: ISSUER_SEED, node, network: 'mock' })
+const spare = await issuer.balance()
+issuer.close()
+check(
+  'issuing this world burned exactly what the faucet was asked for',
+  spare === 0,
+  `${issuanceCost(assets)} drawn for ${assets} assets, ${spare} left over`,
+)
+// A restart issues nothing, because issuance is idempotent per (issuer, symbol),
+// so it must not draw on a rate-limited faucet for issuances it will not perform.
+check('a restart needs no funding at all', issuanceCost(assets, assets) === 0)
+check('and one more item type costs one more escalating burn', issuanceCost(assets + 1, assets) === assets + 1)
 
 const catalogue = economy.catalogue()
 check('the shop has a catalogue', catalogue.items.length > 0, `${catalogue.items.length} items`)

@@ -12,6 +12,7 @@
 import { isAddress } from 'kei-transaction'
 
 import { STARTING_GOLD, type Economy } from './Economy'
+import { guardRoute } from '../utils/Failsafe'
 import Logger from '../utils/Logger'
 
 // An address names somebody; it does not authenticate them. Every hall listing
@@ -40,7 +41,33 @@ import Logger from '../utils/Logger'
 /** An order id as `Economy.order()` writes them: 24 random bytes in hex. */
 const looksLikeOrderId = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{48}$/.test(value)
 
-export function mountEconomyApi(app: any, economy: Economy): void {
+/**
+ * What `POST /kei/purse` needs from the game's own account tables.
+ *
+ * A port rather than a `Database` import, for the same reason `PaidRewards` in
+ * `Inventory.ts` is one: this directory holds the issuer's seed and should not
+ * also know how characters are stored. What it needs is two questions and one
+ * fact — whose character this is, whether the purse has already gone out, and
+ * that it has now.
+ */
+export interface StartingPurses {
+  /** Does this login token own this character? The only credential that route has. */
+  owns(token: string, characterId: number): Promise<boolean>
+  /**
+   * Has this address, or this character, already been given one?
+   *
+   * Both, and durably. The address is the guard that survives a restart, because
+   * a Kei address is never reissued; the character is the guard that stops one
+   * player claiming again from a second browser wallet.
+   */
+  granted(address: string, characterId: number): Promise<boolean>
+  record(entry: { address: string; characterId: number; amount: number }): Promise<void>
+}
+
+export function mountEconomyApi(app: any, economy: Economy, purses: StartingPurses): void {
+  /** Addresses whose starting purse is being written down right now. */
+  const granting = new Set<string>()
+
   /** Everything the client needs to render a shop and price it. */
   app.get('/kei/catalogue', (_request: any, response: any) => {
     response.json(economy.catalogue())
@@ -161,12 +188,92 @@ export function mountEconomyApi(app: any, economy: Economy): void {
   })
 
   /**
+   * The starting purse, and the only mint a production player can reach.
+   *
+   * A new character owns nothing, because it owns what the chain says it owns
+   * and the chain has never heard of it. The cheapest thing the vendor sells is
+   * a sword at 100 gold, so before this route existed the deployed game had no
+   * first move at all: `STARTING_GOLD` was read only by `/kei/grant`, which is
+   * closed in production, which is the only environment a player is in
+   * (issue #24).
+   *
+   * Three properties make this a starting purse rather than a faucet with a
+   * longer name.
+   *
+   * **It is claimed with the game's own credential.** The login token is what
+   * `/create_character` already trusts, and it is checked against the character
+   * being claimed for, so a stranger cannot claim on somebody else's behalf.
+   *
+   * **It goes out once, and the record of that survives a restart.** Once per
+   * address, because an address is never reissued, and once per character, so a
+   * second browser wallet is not a second purse. The row is written before the
+   * mint for the reason `Inventory.pay()` writes its own first: an interrupted
+   * grant that under-pays is a support question, and one that over-pays is an
+   * unbounded mint of this world's currency.
+   *
+   * **The destination is unproven, and that is survivable here and nowhere
+   * else.** This server still cannot check that a wallet belongs to the player
+   * holding it (`proofUnavailable`, issue #6), so the address is taken on the
+   * claimant's word. What that buys an attacker is the ability to send their own
+   * one-time endowment somewhere they do not control. It is not sybil-proof
+   * either — accounts are free — and it is not pretending to be: what bounds it
+   * is that gold is this world's own token, the shop burns what it takes, and a
+   * deployment that wants no starting purse sets `KEI_STARTING_GOLD=0`.
+   */
+  app.post(
+    '/kei/purse',
+    guardRoute(async (request: any, response: any) => {
+      const token = request.query.token
+      const address = request.query.address
+      const characterId = Number(request.query.character)
+
+      if (typeof token !== 'string' || token === '') {
+        return response.status(400).json({ error: 'Log in first.' })
+      }
+      if (!isAddress(address)) {
+        return response.status(400).json({ error: 'That is not a Kei address.' })
+      }
+      if (!Number.isInteger(characterId) || characterId < 1) {
+        return response.status(400).json({ error: 'Which character?' })
+      }
+      if (STARTING_GOLD < 1) {
+        return response.json({ granted: 0, reason: 'This world does not give out a starting purse.' })
+      }
+
+      if (!(await purses.owns(token, characterId))) {
+        // The same answer for a character somebody else owns and a character
+        // that does not exist, so this cannot be used to enumerate either.
+        return response.status(403).json({ error: 'That is not your character.' })
+      }
+
+      // Held before anything is awaited, so two claims arriving together do not
+      // both read "not granted yet" before either writes a row.
+      if (granting.has(address)) {
+        return response.json({ granted: 0, reason: 'Your starting purse is on its way.' })
+      }
+      granting.add(address)
+      try {
+        if (await purses.granted(address, characterId)) {
+          return response.json({ granted: 0, reason: 'You have already had your starting purse.' })
+        }
+
+        await purses.record({ address, characterId, amount: STARTING_GOLD })
+        await economy.grant(address, STARTING_GOLD)
+        Logger.info(`[kei][purse] granted ${STARTING_GOLD} gold to character ${characterId}`)
+        response.json({ granted: STARTING_GOLD })
+      } finally {
+        granting.delete(address)
+      }
+    }),
+  )
+
+  /**
    * A faucet, and only ever a development one.
    *
    * Granting gold is a mint the issuer signs, so an endpoint that does it on
    * request is an endpoint that prints this world's currency for anybody who
-   * asks. In a real deployment a character is granted its starting gold once,
-   * when it is created, and never from a route the client can call.
+   * asks. What a production player gets instead is `/kei/purse` above, which is
+   * the same mint bounded by a credential and a durable record.
    */
   app.post('/kei/grant', async (request: any, response: any) => {
     if (process.env.NODE_ENV === 'production') {
@@ -191,6 +298,11 @@ export function mountEconomyApi(app: any, economy: Economy): void {
   })
 
   Logger.info('[kei] economy api mounted at /kei — issuer ' + economy.address)
+  Logger.info(
+    STARTING_GOLD > 0
+      ? `[kei] a new character claims ${STARTING_GOLD} gold once, at /kei/purse`
+      : '[kei] KEI_STARTING_GOLD=0, so a new character starts with nothing and earns its first gold at the auction house',
+  )
   if (process.env.NODE_ENV !== 'production') {
     Logger.warning('[kei] /kei/grant is open because this is not a production build — it mints gold on request')
   }

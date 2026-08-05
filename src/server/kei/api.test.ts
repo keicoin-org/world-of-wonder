@@ -75,7 +75,13 @@ const seller = await Kei.start({ node, seed: SELLER_SEED })
 
 const app = express()
 app.use(express.json())
-mountEconomyApi(app, economy)
+// Nothing below claims a starting purse; `Purse.test.ts` is where that route is
+// exercised. This is the shape of a world nobody has claimed one in.
+mountEconomyApi(app, economy, {
+  owns: async () => false,
+  granted: async () => false,
+  record: async () => undefined,
+})
 const server = app.listen(0)
 await new Promise((resolve) => server.once('listening', resolve))
 const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`

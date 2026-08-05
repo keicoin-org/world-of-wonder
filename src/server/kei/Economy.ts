@@ -17,7 +17,7 @@
 
 import { randomBytes } from 'node:crypto'
 
-import { Kei, type IssuerToken, type Item } from 'kei-transaction'
+import { Kei, KEI_DECIMALS, issuanceBurn, type IssuerToken, type Item } from 'kei-transaction'
 import type { KeiNode } from 'kei-transaction'
 
 import { openHall, type Hall } from './Hall'
@@ -38,8 +38,38 @@ export const COIN = {
 export const GOLD_PER_KEI = 1_000
 /** Below this a top-up is not worth a block. */
 export const MINIMUM_TOP_UP = 0.001
-/** What a character that has never played starts with. */
-export const STARTING_GOLD = 500
+/**
+ * What a character that has never played is given, once.
+ *
+ * It buys the vendor's sword at 100 and two small potions at 150 each, which is
+ * the first five minutes: something to fight with, something to survive a
+ * mistake, and 100 spare so the auction house is legible rather than
+ * theoretical. It is deliberately not enough for the 2,000-gold armour — that
+ * is what playing is for.
+ *
+ * Reaching a player is `POST /kei/purse`, and how it stays bounded is written
+ * there. Before issue #24 this constant was read only by `/kei/grant`, which is
+ * closed in production, so the environment it was written for was the one
+ * environment it never applied to.
+ *
+ * `KEI_STARTING_GOLD` overrides it, and `0` turns the purse off for a deployment
+ * that would rather its players started with nothing. A value that is not a
+ * whole number in range is refused at startup rather than rounded into
+ * something nobody chose.
+ */
+export const STARTING_GOLD = configuredStartingGold()
+
+function configuredStartingGold(): number {
+  const configured = process.env.KEI_STARTING_GOLD
+  if (configured === undefined || configured === '') return 500
+  const amount = Number(configured)
+  if (!Number.isInteger(amount) || amount < 0 || amount > 10_000) {
+    throw new Error(
+      `KEI_STARTING_GOLD is what every new character is given once, so it is a whole number of gold between 0 and 10000 — got "${configured}". Unset it for the usual 500, or set 0 to hand out nothing.`,
+    )
+  }
+  return amount
+}
 
 /**
  * How many units of each item may ever exist. t5c items are archetypes — fifty
@@ -63,6 +93,36 @@ const ORDER_ID_BYTES = 24
 
 /** The oldest shopkeeper's margin there is: you sell back for half of list. */
 export const buybackPrice = (value: number): number => Math.floor(value / 2)
+
+/** One whole Kei in raw units, for turning a burn back into a fundable number. */
+const KEI_UNIT = 10 ** KEI_DECIMALS
+
+/**
+ * What it costs this account, in Kei, to get from `issuedAlready` assets to
+ * `assets`.
+ *
+ * Asked rather than stated. The n-th asset an account issues burns n Kei
+ * (SPEC §5.6.5) and `issuanceBurn` is the SDK's own copy of that rule, so this
+ * cannot drift from what the chain will actually charge — which is the whole
+ * complaint in issue #24, where the number here was sized against a flat 1,000
+ * Kei that the n-Kei rule had already replaced. This world's ten assets burn 55
+ * Kei between them; the arithmetic that asked for 10,100 was not conservative,
+ * it was fossilised.
+ *
+ * Zero once the account has already issued them all, which is what a restart
+ * is: issuance is idempotent per (issuer, symbol), so a second start performs no
+ * issuances and needs no funding for them.
+ */
+export function issuanceCost(assets: number, issuedAlready = 0): number {
+  let kei = 0
+  for (let n = issuedAlready; n < assets; n += 1) {
+    // `issuanceBurn` answers in raw units and a faucet is asked in whole Kei.
+    // Rounded up per asset, so a rule that ever charged a fraction of one still
+    // leaves this address able to pay it.
+    kei += Math.ceil(Number(issuanceBurn(n)) / KEI_UNIT)
+  }
+  return kei
+}
 
 export interface EconomyOptions {
   seed: string
@@ -197,13 +257,22 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
   // on a mock the faucet covers it; on mainnet there is no faucet, so a person
   // funds this address once and the shortfall has to be said out loud rather
   // than discovered as a failed issuance halfway through the list.
+  //
+  // How many of those assets this account has issued already is asked of the
+  // chain rather than assumed, so the figure is what the issuances below will
+  // actually burn: everything on a first run, and nothing at all on a restart.
+  // Asking a rate-limited faucet for 10,100 on every boot to perform issuances
+  // that burn 55 once was an availability risk with no upside (issue #24).
   const keys = Object.keys(ItemsDB)
-  const needed = (keys.length + 1) * 1_000 + 100
+  const account = await kei.client.node.accountInfo(kei.address)
+  const issuedAlready = account?.issuedCount ?? 0
+  const remaining = Math.max(0, keys.length + 1 - issuedAlready)
+  const needed = issuanceCost(keys.length + 1, issuedAlready)
   const balance = await kei.balance()
   if (balance < needed) {
     if (options.network === 'mainnet') {
       throw new Error(
-        `This world needs about ${needed} Kei to issue its currency and ${keys.length} item types, and ${kei.address} holds ${balance}. There is no faucet on mainnet — send the difference to that address and start the server again.`,
+        `This world has ${remaining} assets left to issue and burns ${needed} Kei doing it, and ${kei.address} holds ${balance}. There is no faucet on mainnet — send the difference to that address and start the server again.`,
       )
     }
     try {

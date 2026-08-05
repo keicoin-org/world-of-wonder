@@ -300,6 +300,40 @@ class Database {
     }
 
     /**
+     * Does this login token own this character?
+     *
+     * The join is the check. `/kei/purse` is handed a token and a character id
+     * by the client and may believe neither on its own: the token says which
+     * account is asking, the row says whether that account is the one the
+     * character belongs to, and only both together are permission to mint
+     * (issue #24).
+     */
+    async ownsCharacter(token: string, character_id: number): Promise<boolean> {
+        const sql = `SELECT C.id FROM characters C INNER JOIN users U ON U.id = C.user_id WHERE U.token=? AND C.id=?;`;
+        const row = await this.querier.get(sql, [token, character_id] as any);
+        return !!row;
+    }
+
+    /**
+     * Has this address, or this character, already had a starting purse?
+     *
+     * Either is enough to refuse. The address is the guard that survives a
+     * restart; the character is the one that stops a second browser wallet being
+     * a second purse.
+     */
+    async hasStartingPurse(address: string, character_id: number): Promise<boolean> {
+        const sql = `SELECT address FROM starting_purses WHERE address=? OR owner_id=?;`;
+        const row = await this.querier.get(sql, [address, character_id] as any);
+        return !!row;
+    }
+
+    /** Written before the mint, so an interruption under-pays rather than over-mints. */
+    async recordStartingPurse(entry: { address: string; characterId: number; amount: number }) {
+        const sql = "INSERT INTO starting_purses (`address`, `owner_id`, `amount`, `granted_at`) VALUES (?,?,?,?)";
+        return this.querier.run(sql, [entry.address, entry.characterId, entry.amount, Date.now()] as any);
+    }
+
+    /**
      * Has this server-authored reward already been minted on the chain?
      *
      * The row is the whole answer: it is written before the mint and never

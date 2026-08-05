@@ -124,6 +124,30 @@ export class Wallet {
         return wallet;
     }
 
+    /**
+     * Ask for this character's starting purse. Returns what arrived, or zero.
+     *
+     * Zero is the ordinary answer, not a failure: it is what a character that has
+     * already had one gets, and what a world that hands out nothing gets. The
+     * server decides, and it decides once — the token and character id here are
+     * the credential, and this browser's address is only the destination.
+     *
+     * Never throws. A player who cannot claim can still walk, fight and talk, and
+     * the vendor says what it costs; a purse that did not arrive must not be the
+     * reason the game does not start (issue #24).
+     */
+    public async claimStartingPurse(token: string, characterId: number): Promise<number> {
+        try {
+            const claim = await this.ask("/kei/purse", { token, character: characterId, address: this.address });
+            const granted = Number(claim?.granted ?? 0);
+            if (granted > 0) await this.refresh();
+            return granted;
+        } catch (error) {
+            console.warn("[wallet] no starting purse:", (error as Error).message);
+            return 0;
+        }
+    }
+
     /** What this world sells, whether or not the vendor in front of you stocks it. */
     public wares(): ShopItem[] {
         return Array.from(this._shop.values());

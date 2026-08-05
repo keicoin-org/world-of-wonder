@@ -26,7 +26,8 @@
         "test:api": "node scripts/build-server.mjs --entry src/server/Api.test.ts --out dist/test/api.mjs && node dist/test/api.mjs",
         "test:addresses": "node scripts/build-server.mjs --entry src/server/kei/api.test.ts --out dist/test/addresses.mjs && node dist/test/addresses.mjs",
         "test:origins": "node scripts/build-server.mjs --entry src/server/Origins.test.ts --out dist/test/origins.mjs && node dist/test/origins.mjs",
-        "test": "npm run test:startup && npm run test:economy && npm run test:market && npm run test:inventory && npm run test:outbox && npm run test:room && npm run test:quests && npm run test:api && npm run test:addresses && npm run test:origins",
+        "test:purse": "node scripts/build-server.mjs --entry src/server/kei/Purse.test.ts --out dist/test/purse.mjs && node dist/test/purse.mjs",
+        "test": "npm run test:startup && npm run test:economy && npm run test:market && npm run test:inventory && npm run test:outbox && npm run test:room && npm run test:quests && npm run test:api && npm run test:addresses && npm run test:origins && npm run test:purse",
         "test:e2e": "node scripts/build-server.mjs --entry src/server/kei/endtoend.test.ts --out dist/test/e2e.mjs && node dist/test/e2e.mjs"
     },
     "author": "Orion3d, Kei",

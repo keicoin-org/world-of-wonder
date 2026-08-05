@@ -69,6 +69,13 @@ CREATE TABLE IF NOT EXISTS "character_quests" (
     UNIQUE("id")
 );
 
+CREATE TABLE IF NOT EXISTS "starting_purses" (
+    "address" TEXT PRIMARY KEY,
+    "owner_id" INTEGER,
+    "amount" INTEGER DEFAULT 0,
+    "granted_at" INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS "reward_payments" (
     "id" TEXT PRIMARY KEY,
     "owner_id" INTEGER,
