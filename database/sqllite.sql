@@ -77,3 +77,56 @@ CREATE TABLE IF NOT EXISTS "reward_payments" (
     "items" TEXT,
     "paid_at" INTEGER
 );
+
+-- Rewards the server has authored and the chain has not finished taking.
+-- src/server/kei/Outbox.ts is the state machine; this is only where it lives.
+-- Neither of these two tables holds a balance and neither authorizes anything:
+-- they are workflow state and chain receipts, and the chain is still the ledger.
+--
+-- payload is the immutable list of legs, written by the one INSERT that enqueues
+-- a reward. Neither database adapter here exposes a transaction, so that single
+-- statement is what makes authoring atomic: the rows in reward_outbox_legs are
+-- derived from the payload on the first claim, and deriving them again does
+-- nothing. A crash on either side of either step loses no reward and duplicates
+-- none.
+--
+-- replayable says whether ordinary play could author this same id a second time.
+-- A quest can, because its id is a character and a quest key. Loot cannot,
+-- because its id is an entity that died with the room. Retention reads it.
+
+CREATE TABLE IF NOT EXISTS "reward_outbox" (
+    "id" TEXT PRIMARY KEY,
+    "owner_id" INTEGER,
+    "address" TEXT,
+    "issuer" TEXT,
+    "payload" TEXT,
+    "replayable" INTEGER DEFAULT 0,
+    "state" TEXT DEFAULT 'pending',
+    "attempts" INTEGER DEFAULT 0,
+    "lease_until" INTEGER DEFAULT 0,
+    "reason" TEXT,
+    "enqueued_at" INTEGER,
+    "settled_at" INTEGER
+);
+
+-- One asset moving to one address. units is raw units as a decimal string,
+-- because a JS number cannot carry raw units of anything with decimals and a
+-- reward is a bad place to lose the bottom of a number. previous is the issuer
+-- frontier the mint was aimed at, recorded before it was sent: an account chain
+-- is linear and single-writer, so exactly one block can ever follow a given one,
+-- which is what lets an ambiguous timeout be reconciled by block identity rather
+-- than by reading a balance players are free to change themselves.
+
+CREATE TABLE IF NOT EXISTS "reward_outbox_legs" (
+    "reward_id" TEXT NOT NULL,
+    "leg" INTEGER NOT NULL,
+    "kind" TEXT,
+    "key" TEXT,
+    "units" TEXT,
+    "state" TEXT DEFAULT 'pending',
+    "attempts" INTEGER DEFAULT 0,
+    "previous" TEXT,
+    "receipt" TEXT,
+    "error" TEXT,
+    PRIMARY KEY ("reward_id", "leg")
+);
