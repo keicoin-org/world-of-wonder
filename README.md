@@ -117,6 +117,26 @@ inserted by hand never authorizes anything at all. What it does not do is
 restart the process: the record of what was already minted is in SQLite, so the
 test stands a new authority up against it rather than proving a reboot.
 
+### A new player's first gold is bought, not granted
+
+There is no welcome gift, and the constant that used to look like one is gone.
+`STARTING_GOLD = 500` was spent by exactly one caller — `POST /kei/grant`, which
+404s in production — so a player on the deployed site started with 0 gold, a
+100-gold sword in front of them, and nothing in between (issue #24).
+
+It cannot simply be moved somewhere production reaches. A grant is a mint the
+issuer signs, so granting to an address a client merely named would mint this
+world's currency for whoever asked; and until a character can prove which wallet
+is its own, there is no other address to grant to. `/kei/grant` stays a
+development faucet and stays shut in production.
+
+What a deployed player has instead is the exchange desk, which needs no route at
+all. `/kei/catalogue` publishes the rate, the player signs a Kei transfer to the
+issuer, and `acceptTopUps` mints gold when it lands — the same shape as buying a
+sword with the legs swapped, and nothing in it has to be trusted. **Buy gold** in
+the bag panel does exactly that, drawing the Kei from the network faucet first on
+the two networks that have one.
+
 ### Buying takes two signatures
 
 The game cannot sign for a player's wallet, so a purchase is always the player

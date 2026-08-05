@@ -9,8 +9,20 @@
  * Mounted under /kei so it cannot collide with upstream's /login and /characters.
  */
 
-import { STARTING_GOLD, type Economy } from './Economy'
+import type { Economy } from './Economy'
 import Logger from '../utils/Logger'
+
+/**
+ * What `/kei/grant` hands out when the caller does not say.
+ *
+ * It lives here, next to the only route that spends it, and it is named for what
+ * it is. It used to be `STARTING_GOLD` in `Economy.ts`, which read as the amount
+ * a new character begins with — and no character has ever begun with it, because
+ * this route is the only spender and production closes it (issue #24). A
+ * production player's gold comes from the exchange desk, at the rate the
+ * catalogue publishes.
+ */
+const DEV_GRANT_GOLD = 500
 
 /**
  * An address names somebody; it does not authenticate them. Every hall listing
@@ -153,8 +165,14 @@ export function mountEconomyApi(app: any, economy: Economy): void {
    *
    * Granting gold is a mint the issuer signs, so an endpoint that does it on
    * request is an endpoint that prints this world's currency for anybody who
-   * asks. In a real deployment a character is granted its starting gold once,
-   * when it is created, and never from a route the client can call.
+   * asks. That is why it 404s in production, and why nothing was quietly moved
+   * behind it to make a deployed player richer: a mint to an address a client
+   * merely named is a mint to whoever asked (SPEC §8).
+   *
+   * What a deployed player has instead is the exchange desk, and it needs no
+   * route at all: `/kei/catalogue` publishes the rate, and the purchase is a Kei
+   * transfer the player signs to the issuer. Nothing here has to be trusted with
+   * anything, which is why that is the one that survives production.
    */
   app.post('/kei/grant', async (request: any, response: any) => {
     if (process.env.NODE_ENV === 'production') {
@@ -162,7 +180,7 @@ export function mountEconomyApi(app: any, economy: Economy): void {
     }
 
     const address = request.query.address
-    const amount = Number(request.query.amount ?? STARTING_GOLD)
+    const amount = Number(request.query.amount ?? DEV_GRANT_GOLD)
     if (!looksLikeAddress(address)) {
       return response.status(400).json({ error: 'That is not a Kei address.' })
     }

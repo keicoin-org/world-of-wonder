@@ -1,4 +1,5 @@
 import { Rectangle } from "@babylonjs/gui/2D/controls/rectangle";
+import { Button } from "@babylonjs/gui/2D/controls/button";
 import { Image } from "@babylonjs/gui/2D/controls/image";
 import { TextBlock } from "@babylonjs/gui/2D/controls/textBlock";
 import { Control } from "@babylonjs/gui/2D/controls/control";
@@ -6,6 +7,15 @@ import { Grid } from "@babylonjs/gui/2D/controls/grid";
 import { Item } from "../../../../shared/types";
 import { Rarity } from "../../../../shared/Class/Rarity";
 import { Panel } from "./Panel";
+
+/**
+ * How much Kei the purse button changes at a time.
+ *
+ * One, because the cheapest thing in the shop is a 100-gold sword and the rate
+ * is a thousand gold to the Kei — so a single click is enough to be playing
+ * rather than enough to be topped up forever.
+ */
+const TOP_UP_KEI = 1;
 
 /**
  * The bag, and what the chain says is in it.
@@ -30,6 +40,8 @@ export class Panel_Inventory extends Panel {
 
     /** Set while a refresh is in flight, so two do not race each other. */
     private _refreshing = false;
+    /** Set while a top-up is in flight. Two clicks must not mean two payments. */
+    private _buying = false;
 
     constructor(_UI, _currentPlayer, options) {
         super(_UI, _currentPlayer, options);
@@ -109,6 +121,27 @@ export class Panel_Inventory extends Panel {
         panel.addControl(statusText);
         this._statusUI = statusText;
 
+        // The purse's own button, and the reason issue #24 was a P1: a player on
+        // the deployed site had 0 gold, a 100-gold sword in front of them, and no
+        // route between the two. This is the route — Kei changed for gold at the
+        // desk the catalogue publishes, paid for by this wallet's own signature.
+        // There is no server call that could do it instead, which is the point.
+        const changeBtn = Button.CreateSimpleButton("changeKeiBtn", "Buy gold");
+        changeBtn.width = "70px";
+        changeBtn.height = "22px";
+        changeBtn.top = "-3px";
+        changeBtn.left = "80px";
+        changeBtn.color = "white";
+        changeBtn.fontSize = "12px";
+        changeBtn.thickness = 0;
+        changeBtn.background = "rgba(0,0,0,.5)";
+        changeBtn.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT;
+        changeBtn.verticalAlignment = Control.VERTICAL_ALIGNMENT_BOTTOM;
+        panel.addControl(changeBtn);
+        changeBtn.onPointerDownObservable.add(() => {
+            void this.buyGold();
+        });
+
         ///////////////////////////////////////////////////////
 
         let inventoryGrid = new Rectangle("inventoryGrid");
@@ -184,6 +217,36 @@ export class Panel_Inventory extends Panel {
     private say(message: string) {
         if (this._statusUI) {
             this._statusUI.text = message;
+        }
+    }
+
+    /**
+     * Change Kei for gold, drawing the Kei first where the network has a faucet.
+     *
+     * Two steps rather than one because they are two different things: the
+     * faucet is the chain's and gives Kei, the desk is this world's and sells
+     * gold. On mainnet the first step does not exist, so the player is told
+     * where to send Kei instead of being shown a button that cannot work.
+     */
+    private async buyGold() {
+        if (!this.wallet || this._buying) {
+            return;
+        }
+        this._buying = true;
+        try {
+            if ((await this.wallet.keiBalance()) < TOP_UP_KEI && this.wallet.network !== "mainnet") {
+                this.say("Drawing Kei...");
+                await this.wallet.drawKei(TOP_UP_KEI);
+            }
+            this.say("Changing Kei for gold...");
+            const gained = await this.wallet.topUp(TOP_UP_KEI);
+            this.say(`Changed ${TOP_UP_KEI} Kei for ${gained} gold.`);
+            this.updateGold();
+        } catch (error) {
+            // These messages are written to be shown to a player as-is.
+            this.say((error as Error).message);
+        } finally {
+            this._buying = false;
         }
     }
 

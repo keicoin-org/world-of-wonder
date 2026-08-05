@@ -88,6 +88,17 @@ export class Wallet {
     public readonly address: string;
     /** Where purchases are paid, and where a sale is sent. */
     public readonly shopkeeper: string;
+    /** Which chain this is. A faucet exists on two of the three. */
+    public readonly network: "mock" | "testnet" | "mainnet";
+    /**
+     * The exchange desk, as the catalogue publishes it.
+     *
+     * This is how a player with no gold gets some, and in a production
+     * deployment it is the only how: `/kei/grant` is closed there, and a server
+     * that could credit a character on its own say-so would be a server whose
+     * database is the economy again (issue #24).
+     */
+    public readonly exchange: { open: boolean; goldPerKei: number; minimum: number };
 
     /** What the chain last said. `refresh()` is what makes these true again. */
     public gold: number = 0;
@@ -100,6 +111,8 @@ export class Wallet {
         this._coinScale = 10 ** catalogue.coin.decimals;
         this.address = kei.address;
         this.shopkeeper = catalogue.issuer;
+        this.network = catalogue.network;
+        this.exchange = catalogue.exchange;
         catalogue.items.forEach((item) => {
             this._shop.set(item.key, item);
             this._byAsset.set(item.asset, item);
@@ -263,6 +276,71 @@ export class Wallet {
             throw new Error(`The shop has your ${item.title} and has not paid yet. Check your purse in a moment.`);
         }
         return this.gold - before;
+    }
+
+    // --------------------------------------------------------- exchange desk
+
+    /** Kei, as opposed to gold. The one thing the desk takes. */
+    public async keiBalance(): Promise<number> {
+        return this._kei.balance();
+    }
+
+    /**
+     * Change Kei for gold at the desk, at the rate the catalogue publishes.
+     *
+     * This is how a player who has never played gets their first gold, and in a
+     * production deployment it is the only how (issue #24). It is a purchase and
+     * not a gift: the Kei leaves this wallet under this wallet's signature, and
+     * the gold appears because the issuer saw the payment land — the same shape
+     * as buying a sword, with the legs swapped.
+     *
+     * `rate` is issuer configuration and never touches the chain (SPEC §5.4), so
+     * the number quoted here is the catalogue's rather than the ledger's.
+     */
+    public async topUp(kei: number): Promise<number> {
+        if (!this.exchange.open) {
+            throw new Error("This world's exchange desk is closed. Gold has to be earned or traded for here.");
+        }
+        if (!(kei >= this.exchange.minimum)) {
+            throw new Error(`The desk does not deal in less than ${this.exchange.minimum} Kei.`);
+        }
+
+        const held = await this.keiBalance();
+        if (held < kei) {
+            throw new Error(`Changing ${kei} Kei needs ${kei} Kei, and this wallet holds ${held}. Send some to ${this.address}.`);
+        }
+
+        await this.refresh();
+        const before = this.gold;
+
+        await this._kei.pay({ to: this.shopkeeper, amount: kei });
+
+        // The gold is what is waited for. The payment returning only says the Kei
+        // left; the desk mints on the arrival, so nothing has happened for the
+        // player until the chain says they hold it.
+        const arrived = await this.until(async () => {
+            await this.refresh();
+            return this.gold > before;
+        });
+        if (!arrived) {
+            throw new Error("Your Kei was sent and the gold has not arrived yet. Check your purse in a moment.");
+        }
+        return this.gold - before;
+    }
+
+    /**
+     * Draw Kei from the network's faucet, on the two networks that have one.
+     *
+     * Not a route through the game server: the faucet belongs to the chain, this
+     * wallet asks it directly, and the game learns about it when the Kei is
+     * spent at the desk. On mainnet there is nothing to ask, and saying so is
+     * better than a button that fails obscurely.
+     */
+    public async drawKei(kei: number): Promise<void> {
+        if (this.network === "mainnet") {
+            throw new Error(`There is no faucet on mainnet. Send Kei to ${this.address}, then change it for gold.`);
+        }
+        await this._kei.faucet(kei);
     }
 
     // --------------------------------------------------------- auction house

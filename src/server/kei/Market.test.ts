@@ -24,7 +24,7 @@
 import { Kei } from 'kei-transaction'
 
 import { lotOffer, offerMatchesDisplay, priceLot } from '../../shared/market'
-import { startEconomy, STARTING_GOLD } from './Economy'
+import { startEconomy } from './Economy'
 import { openHall } from './Hall'
 
 const ISSUER_SEED = 'A'.repeat(64)
@@ -60,8 +60,11 @@ const buyer = await Kei.start({ node, seed: BUYER_SEED })
 const catalogue = economy.catalogue()
 const sword = catalogue.items.find((item) => item.key === 'sword_01')!
 
-await economy.grant(seller.address, STARTING_GOLD)
-await economy.grant(buyer.address, STARTING_GOLD)
+// A purse each, so the trade below is about the hall rather than about how
+// either of them came by their gold.
+const PURSE = 500
+await economy.grant(seller.address, PURSE)
+await economy.grant(buyer.address, PURSE)
 await Promise.all([seller.sync(), buyer.sync()])
 
 const sellerGold = await seller.token.get(catalogue.coin.asset)

@@ -17,7 +17,7 @@
 
 import { randomBytes } from 'node:crypto'
 
-import { Kei, type IssuerToken, type Item } from 'kei-transaction'
+import { Kei, KEI_DECIMALS, issuanceBurn, type IssuerToken, type Item } from 'kei-transaction'
 import type { KeiNode } from 'kei-transaction'
 
 import { openHall, type Hall } from './Hall'
@@ -37,8 +37,24 @@ export const COIN = {
 export const GOLD_PER_KEI = 1_000
 /** Below this a top-up is not worth a block. */
 export const MINIMUM_TOP_UP = 0.001
-/** What a character that has never played starts with. */
-export const STARTING_GOLD = 500
+
+// There is deliberately no STARTING_GOLD here any more.
+//
+// It said 500 and did nothing: the only thing that ever spent it was
+// `/kei/grant`, which is closed in production, so a player on the deployed site
+// started with 0 gold against a 100-gold sword and no route forward (issue #24).
+// A constant that is right in the file and absent from the only environment that
+// matters is worse than no constant, because it reads like a decision.
+//
+// The route a production player actually has is the exchange desk below: they
+// send Kei and this account mints them `GOLD_PER_KEI` gold for each one, which
+// is a swap the player signs rather than a gift the server hands out. That
+// distinction is the whole of SPEC §8 — a server that could credit a character
+// on its own say-so would be a server whose database is the economy again — and
+// it is why the grant cannot simply be moved somewhere production reaches.
+// Until a character can prove which wallet is its own (`proofUnavailable` in
+// Inventory.ts), there is no address this world could safely mint a welcome gift
+// to in the first place.
 
 /**
  * How many units of each item may ever exist. t5c items are archetypes — fifty
@@ -62,6 +78,33 @@ const ORDER_ID_BYTES = 24
 
 /** The oldest shopkeeper's margin there is: you sell back for half of list. */
 export const buybackPrice = (value: number): number => Math.floor(value / 2)
+
+/** One Kei in raw units, built rather than written as a literal: `tsconfig` targets ES6. */
+const ONE_KEI_RAW = BigInt('1'.padEnd(KEI_DECIMALS + 1, '0'))
+
+/**
+ * What it costs, in Kei, for an account that has already issued `issuedAlready`
+ * assets to issue `count` more.
+ *
+ * The rule is SPEC §5.6.5 — the nth asset an account issues burns n Kei — and
+ * the arithmetic is `issuanceBurn`'s rather than this file's. That is the point:
+ * a pricing rule copied into an application is a rule that goes stale there, and
+ * this one already had. What stood here charged a flat 1,000 per asset, which is
+ * the rule §5.6.5 says it *replaced*, and so asked a rate-limited faucet for
+ * 10,100 Kei to spend 55 (issue #24).
+ *
+ * Zero or fewer is zero, which is the ordinary case on a restart: issuing is
+ * idempotent per (issuer, symbol), so a world that already has its assets pays
+ * for none of them again.
+ */
+export function issuanceCost(count: number, issuedAlready = 0): number {
+  let kei = 0
+  // Divided in BigInt and only then made a number: a raw balance is far past
+  // where a double still counts in ones, and every burn is a whole Kei, so the
+  // division is exact.
+  for (let n = 0; n < count; n += 1) kei += Number(issuanceBurn(issuedAlready + n) / ONE_KEI_RAW)
+  return kei
+}
 
 export interface EconomyOptions {
   seed: string
@@ -150,7 +193,14 @@ export interface Economy {
   // to trigger one is to actually part with the item. An endpoint that paid on
   // request would be a mint on request, which is a printing press with a nicer
   // name.
-  /** Starting gold for a character that has never played. */
+  /**
+   * Mint gold to an address, on this server's own authority.
+   *
+   * A printing press, so the callers are counted: a reward the server itself
+   * authored (`Inventory.pay`), and the development faucet at `/kei/grant`,
+   * which production closes. Nothing a player can reach calls this — the way a
+   * player gets gold is to buy it at the exchange desk or earn it in the hall.
+   */
   grant(address: string, amount: number): Promise<void>
   /**
    * Mint an item the server authored — loot, a quest reward — to an address.
@@ -187,13 +237,20 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
   // on a mock the faucet covers it; on mainnet there is no faucet, so a person
   // funds this address once and the shortfall has to be said out loud rather
   // than discovered as a failed issuance halfway through the list.
+  //
+  // What is asked for is what the list below actually burns. The node is the one
+  // that knows how many assets this account has issued, and it prices the next
+  // one, so a world part-way through its catalogue asks for the rest of it and a
+  // world that has all of it asks for nothing — which is what keeps an ordinary
+  // restart off a rate-limited faucet entirely.
   const keys = Object.keys(ItemsDB)
-  const needed = (keys.length + 1) * 1_000 + 100
+  const issuedAlready = (await kei.client.node.accountInfo(kei.address))?.issuedCount ?? 0
+  const needed = issuanceCost(keys.length + 1 - issuedAlready, issuedAlready)
   const balance = await kei.balance()
-  if (balance < needed) {
+  if (needed > 0 && balance < needed) {
     if (options.network === 'mainnet') {
       throw new Error(
-        `This world needs about ${needed} Kei to issue its currency and ${keys.length} item types, and ${kei.address} holds ${balance}. There is no faucet on mainnet — send the difference to that address and start the server again.`,
+        `This world needs ${needed} Kei to issue its currency and ${keys.length} item types, and ${kei.address} holds ${balance}. There is no faucet on mainnet — send the difference to that address and start the server again.`,
       )
     }
     try {

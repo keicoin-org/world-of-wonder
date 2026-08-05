@@ -9,7 +9,7 @@
 
 import { Kei } from 'kei-transaction'
 
-import { startEconomy, STARTING_GOLD } from './Economy'
+import { startEconomy } from './Economy'
 
 const ISSUER_SEED = 'A'.repeat(64)
 const PLAYER_SEED = 'B'.repeat(64)
@@ -41,13 +41,22 @@ check('the shop has a catalogue', catalogue.items.length > 0, `${catalogue.items
 check('gold is a real asset', catalogue.coin.asset.length === 64)
 check('the issuer is not the player', economy.address !== player.address)
 
-// A new character is granted its starting gold. This is a mint the issuer signs
-// — the one thing a game server legitimately can do.
-await economy.grant(player.address, STARTING_GOLD)
+// Where a new player's first gold comes from, and the reason issue #24 exists:
+// the exchange desk, not a welcome gift. `STARTING_GOLD` used to be minted here
+// the way `/kei/grant` mints it, which made this test pass and a deployed player
+// broke — that route 404s in production and nothing else ever spent the
+// constant. What a production player can do is exactly what happens below: send
+// Kei, and get gold at the rate the catalogue publishes. The player signs the
+// payment, which is why the desk needs no trust and survives production.
+check('the desk is open and quotes a rate', catalogue.exchange.open && catalogue.exchange.goldPerKei > 0)
+await player.faucet(1)
+await player.pay({ to: economy.address, amount: 1 })
+const changed = await until(async () => (await economy.goldOf(player.address)) > 0)
+check('a player with Kei and no gold can buy some', changed)
 await player.sync()
 const gold = await player.token.get(catalogue.coin.asset)
-check('the player was granted gold', (await gold.balance()) === STARTING_GOLD, `${await gold.balance()}`)
-check('the chain agrees', (await economy.goldOf(player.address)) === STARTING_GOLD)
+check('at the published rate', (await gold.balance()) === catalogue.exchange.goldPerKei, `${await gold.balance()}`)
+check('and the chain agrees', (await economy.goldOf(player.address)) === catalogue.exchange.goldPerKei)
 
 // Buying. The player signs the transfer; the issuer signs the delivery.
 const sword = catalogue.items.find((item) => item.key === 'sword_01')!
@@ -82,7 +91,7 @@ check('an unpaid order delivers nothing', !notDelivered)
 // A player who cannot afford it is told so rather than quietly served.
 let refused = ''
 try {
-  await economy.order(player.address, 'shield_01' /* 2000, and they have 400 */)
+  await economy.order(player.address, 'shield_01' /* 2000, and they have 900 */)
 } catch (error) {
   refused = (error as Error).message
 }
@@ -201,5 +210,42 @@ check('issuer is stable across economy lifetimes', secondLifetime.issuer === fir
 check('gold asset is stable across economy lifetimes', secondLifetime.coin.asset === firstLifetime.coin.asset)
 check('item asset is stable across economy lifetimes', secondSword.asset === firstSword.asset)
 restarted.close()
+
+// --------------------------------------------------------------- issue #24
+//
+// What a world draws to start with is what starting it actually burns.
+//
+// The draw used to be `(items + 1) * 1,000 + 100` Kei, which prices issuance at
+// the flat 1,000 SPEC §5.6.5 says it *replaced*. The rule is that the nth asset
+// an account issues burns n, so a currency plus ten archetypes costs
+// 1 + 2 + … + 11 = 66. Asking for 11,100 to spend 66 is an availability problem
+// rather than waste: the public testnet faucet is rate-limited, so the draw that
+// gets refused stops the server starting for a reason unrelated to anything it
+// was trying to do.
+//
+// Neither check below restates the number, because a literal checked against
+// itself is the original mistake written down twice. A world funded by nothing
+// but its own request has to be able to issue its whole catalogue — which it
+// cannot if the ask is too small — and has to have nothing left over, which is
+// the only way an ask that was too big is visible at all.
+const ownLedger = await Kei.mock({})
+const sized = await startEconomy({ seed: 'F'.repeat(64), node: ownLedger, network: 'mock' })
+check(
+  'a world funded by its own request issues its whole catalogue',
+  sized.catalogue().items.length === catalogue.items.length,
+  `${sized.catalogue().items.length} of ${catalogue.items.length}`,
+)
+const afterIssuing = BigInt((await ownLedger.accountInfo(sized.address))?.balance ?? '-1')
+check('and drew exactly what issuing it burned', afterIssuing === 0n, `${afterIssuing} raw left over`)
+
+// The other half, and the half a rate-limited faucet cares about: issuing is
+// idempotent per (issuer, symbol), so a world that has already issued its
+// catalogue burns nothing on the way up and must not ask for anything either.
+sized.close()
+const reopened = await startEconomy({ seed: 'F'.repeat(64), node: ownLedger, network: 'mock' })
+const afterRestart = BigInt((await ownLedger.accountInfo(reopened.address))?.balance ?? '-1')
+check('a restart draws nothing, because it issues nothing', afterRestart === 0n, `${afterRestart} raw drawn`)
+reopened.close()
+
 console.log(failures === 0 ? '\nall good\n' : `\n${failures} failed\n`)
 process.exit(failures === 0 ? 0 : 1)
