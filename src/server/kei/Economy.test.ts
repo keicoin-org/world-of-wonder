@@ -109,6 +109,86 @@ check('a sale pays the quoted price', (await gold.balance()) === purse + sword.b
 const afterSale = await economy.inventoryOf(player.address)
 check('and the sword is no longer the player\'s', (afterSale['sword_01'] ?? 0) === 0, `${afterSale['sword_01'] ?? 0}`)
 
+// --------------------------------------------------------------- issue #13
+//
+// An order is not a slot on an address, and the shop keeps no gold it did not
+// sell something for.
+//
+// It used to be both: `orders` held one entry per address, so a second order
+// replaced the first, and an arriving payment was matched against whatever was
+// in that slot when it landed. Placing an order needs nothing but an address,
+// and an address is printed on every hall listing — so anybody could change
+// what somebody else's next payment bought, and because the match only asked
+// that the payment *cover* the order, the difference between the two prices was
+// kept rather than returned.
+//
+// A fresh wallet, so these checks are about the orders made below and not about
+// anything left over from the purchases above.
+const shopper = await Kei.start({ node, seed: 'E'.repeat(64) })
+await economy.grant(shopper.address, 1_000)
+await shopper.sync()
+const purseOf = await shopper.token.get(catalogue.coin.asset)
+const potion = catalogue.items.find((item) => item.key === 'potion_small_red')!
+
+const wanted = await economy.order(shopper.address, 'potion_small_red')
+// The meddling order: same address, cheaper item, placed after. This is exactly
+// what a stranger spraying the route achieves, and what a player who clicks Buy
+// on a second item does to themselves.
+const meddled = await economy.order(shopper.address, 'sword_01')
+check('two orders for one address are two orders', wanted.id !== meddled.id, `${wanted.id} / ${meddled.id}`)
+check('and the second does not replace the first', economy.orderStatus(wanted.id)?.state === 'open')
+check('the order id is not guessable from the address', wanted.id.length === 48 && !wanted.id.includes(shopper.address))
+
+const spendable = await purseOf.balance()
+await purseOf.transfer(wanted.to, wanted.price)
+
+const gotPotion = await until(async () => {
+  const held = await economy.inventoryOf(shopper.address)
+  return (held['potion_small_red'] ?? 0) >= 1
+})
+check('the payment bought what its own order said', gotPotion)
+const afterMeddling = await economy.inventoryOf(shopper.address)
+check('and not what a later order said', (afterMeddling['sword_01'] ?? 0) === 0, `${afterMeddling['sword_01'] ?? 0}`)
+check('the order that was paid for is the one that settled', economy.orderStatus(wanted.id)?.state === 'delivered')
+check('the other one still waits for its own payment', economy.orderStatus(meddled.id)?.state === 'open')
+await shopper.sync()
+check('the shopper paid the potion price and no more', (await purseOf.balance()) === spendable - potion.value, `${await purseOf.balance()}`)
+
+// Overpaying is the 990-gold half of the report. `meddled` is still open and
+// costs 100; this sends 400 at it. There is no branch that keeps the difference,
+// because there is no branch that matches the payment at all.
+const beforeOverpaying = await purseOf.balance()
+await purseOf.transfer(economy.address, 400)
+const overpaymentReturned = await until(async () => {
+  await shopper.sync()
+  return (await purseOf.balance()) === beforeOverpaying
+})
+check('an overpayment comes back rather than being kept', overpaymentReturned, `${await purseOf.balance()}`)
+check('and it delivers nothing', ((await economy.inventoryOf(shopper.address))['sword_01'] ?? 0) === 0)
+check('the order it did not match is untouched', economy.orderStatus(meddled.id)?.state === 'open')
+
+// Two live orders that would cost the same and deliver different things. The
+// shop cannot know which one the gold was for — so it does not choose, because
+// choosing wrong is the whole of this bug and a refund never is.
+const twoPotions = await economy.order(shopper.address, 'potion_small_red', 2)
+const threeSwords = await economy.order(shopper.address, 'sword_01', 3)
+check('both cost the same, which is what makes it ambiguous', twoPotions.price === threeSwords.price, `${twoPotions.price} / ${threeSwords.price}`)
+const beforeTie = await purseOf.balance()
+await purseOf.transfer(economy.address, twoPotions.price)
+const tieReturned = await until(async () => {
+  await shopper.sync()
+  return (await purseOf.balance()) === beforeTie
+})
+check('an ambiguous payment comes back rather than being guessed at', tieReturned, `${await purseOf.balance()}`)
+check(
+  'and both of the tied orders are marked returned',
+  economy.orderStatus(twoPotions.id)?.state === 'refunded' && economy.orderStatus(threeSwords.id)?.state === 'refunded',
+)
+check('with a reason a player can read', (economy.orderStatus(twoPotions.id)?.reason ?? '').includes('could not tell'))
+
+// An id nobody was given is an id about which there is nothing to say.
+check('an invented order id reads as nothing', economy.orderStatus('f'.repeat(48)) === undefined)
+
 // A server lifetime ends while its ledger does not. Reopening the same economy
 // with the stable issuer must recognize exactly the same asset family.
 const firstLifetime = economy.catalogue()

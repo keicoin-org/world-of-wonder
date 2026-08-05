@@ -62,6 +62,14 @@ if (granted.ok) {
     await fetch(`${BASE}/kei/order?address=${player.address}&key=sword_01`, { method: 'POST' })
   ).json()
   check('the shop quotes a price and an address', order.price === 100 && typeof order.to === 'string', JSON.stringify(order))
+  // The id is the order's only name and the only credential for reading it, so
+  // it has to survive the wire (issue #13).
+  check('and names the order with something unguessable', /^[0-9a-f]{48}$/.test(order.id ?? ''), JSON.stringify(order.id))
+
+  const waiting = await (await fetch(`${BASE}/kei/order/${order.id}`)).json()
+  check('an order can be read back by its id', waiting.state === 'open' && waiting.key === 'sword_01', JSON.stringify(waiting))
+  const invented = await fetch(`${BASE}/kei/order/${'a'.repeat(48)}`)
+  check('and an id nobody was given reads as nothing', invented.status === 404, `${invented.status}`)
 
   // The player signs this. The server never sees a key.
   await gold.transfer(order.to, order.price)
@@ -71,6 +79,9 @@ if (granted.ok) {
     return (held.inventory?.sword_01 ?? 0) >= 1
   })
   check('the sword arrived after the chain confirmed payment', arrived)
+
+  const settled = await (await fetch(`${BASE}/kei/order/${order.id}`)).json()
+  check('and the order says so', settled.state === 'delivered', JSON.stringify(settled))
 
   await player.sync()
   check('the player paid for it', (await gold.balance()) === 400, `${await gold.balance()}`)

@@ -174,6 +174,13 @@ export class Wallet {
      * the only way an arriving pile of gold can be matched to what it was for.
      * Then we pay, which only the player can do. Delivery is the shop's answer to
      * the gold landing — so this waits for the item, not for a response.
+     *
+     * `order.id` is the only name that order has, and holding it is what makes
+     * this purchase the player's own: the shop keys orders on it rather than on
+     * an address, so a second order — anybody's — is a second order rather than a
+     * replacement for this one (issue #13). It is also how the shop can say it
+     * sent the gold back, instead of the player being left to infer it from an
+     * item that never turns up.
      */
     public async buy(key: string, qty: number): Promise<void> {
         const item = this.mustKnow(key);
@@ -183,15 +190,42 @@ export class Wallet {
 
         const order = await this.ask("/kei/order", { address: this.address, key, qty });
         const gold = await this._kei.token.get(order.asset);
+        // Exactly the quoted price, because that is how the shop tells which
+        // order a payment is for. Paying more is a mismatch, not a tip.
         await gold.transfer(order.to, order.price);
 
+        let returned = "";
         const delivered = await this.until(async () => {
             await this.refresh();
-            return (this.inventory[key] ?? 0) >= before + qty;
+            if ((this.inventory[key] ?? 0) >= before + qty) return true;
+            const status = await this.orderStatus(order.id);
+            if (status?.state === "refunded") {
+                returned = status.reason ?? "The shop could not fill that order and has sent your gold back.";
+                return true;
+            }
+            return false;
         });
 
+        if (returned !== "") {
+            throw new Error(returned);
+        }
         if (!delivered) {
             throw new Error(`Your gold was sent, but ${item.title} has not arrived yet. Check again in a moment.`);
+        }
+    }
+
+    /**
+     * What the shop says became of an order.
+     *
+     * Not knowing is an ordinary answer — an order is forgotten once it is old
+     * enough — so a failure to read one is never worth interrupting a purchase
+     * for. What the chain says we hold is what settles it either way.
+     */
+    private async orderStatus(id: string): Promise<{ state: string; reason?: string } | undefined> {
+        try {
+            return (await axios.get(this._base + "/kei/order/" + encodeURIComponent(id))).data;
+        } catch (error) {
+            return undefined;
         }
     }
 

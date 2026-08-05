@@ -12,9 +12,21 @@
 import { STARTING_GOLD, type Economy } from './Economy'
 import Logger from '../utils/Logger'
 
-/** A player address is the only credential these routes need, and it is public. */
+/**
+ * An address names somebody; it does not authenticate them. Every hall listing
+ * prints one, so a route that takes an address has been told who a player is and
+ * nothing at all about who is asking.
+ *
+ * That is enough for the read-only routes below, where a leak costs nothing and
+ * the one write grants nothing. It was never enough for `/kei/order`, which is
+ * the only thing that decides what an arriving payment buys — see the order id
+ * there, and issue #13 for what that route was like without one.
+ */
 const looksLikeAddress = (value: unknown): value is string =>
   typeof value === 'string' && /^kei_[a-z0-9]{50,70}$/.test(value)
+
+/** An order id as `Economy.order()` writes them: 24 random bytes in hex. */
+const looksLikeOrderId = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{48}$/.test(value)
 
 export function mountEconomyApi(app: any, economy: Economy): void {
   /** Everything the client needs to render a shop and price it. */
@@ -41,6 +53,13 @@ export function mountEconomyApi(app: any, economy: Economy): void {
    * Take an order. The response says where to send the gold and how much; the
    * client signs that transfer itself. Delivery happens when the chain confirms
    * it, not when this returns — the order is not the purchase.
+   *
+   * The address here is a destination, not a credential, and this route is
+   * writable by anybody — so the order it creates is a *new* order rather than a
+   * replacement for whatever that address had waiting, and it can only be
+   * settled by a payment of exactly its own price. The id in the response is the
+   * order's only name; hold on to it, because `GET /kei/order/:id` is the only
+   * way to ask what happened and there is no other way to learn the id.
    */
   app.post('/kei/order', async (request: any, response: any) => {
     const address = request.query.address
@@ -63,6 +82,29 @@ export function mountEconomyApi(app: any, economy: Economy): void {
       // These messages are written to be shown to a player as-is.
       response.status(400).json({ error: (error as Error).message })
     }
+  })
+
+  /**
+   * What became of an order: still waiting, delivered, or refunded and why.
+   *
+   * The id is the credential, and the only one available — an order is placed
+   * before the payment exists, so there is nothing signed to check yet, and the
+   * game cannot ask the player's wallet to prove control of its address because
+   * no such primitive is published (kei-transaction#125/#142). An unguessable id
+   * needs neither: it was handed to whoever placed the order and to nobody else,
+   * so this route tells a stranger holding an address exactly nothing.
+   */
+  app.get('/kei/order/:id', (request: any, response: any) => {
+    if (!looksLikeOrderId(request.params.id)) {
+      return response.status(400).json({ error: 'That is not an order id.' })
+    }
+    const status = economy.orderStatus(request.params.id)
+    if (!status) {
+      // The same answer for an id that expired and an id that was invented, so
+      // guessing cannot be used to learn which orders exist.
+      return response.status(404).json({ error: 'No such order. It may have been forgotten — orders do not wait forever.' })
+    }
+    response.json(status)
   })
 
   // Selling deliberately has no route. The shop buys by reacting to an item
