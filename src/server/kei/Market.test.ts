@@ -23,7 +23,7 @@
 
 import { Kei } from 'kei-transaction'
 
-import { offerMatchesDisplay } from '../../shared/market'
+import { lotOffer, offerMatchesDisplay, priceLot } from '../../shared/market'
 import { startEconomy, STARTING_GOLD } from './Economy'
 import { openHall } from './Hall'
 
@@ -223,6 +223,74 @@ check('and puts the sword back in the seller\'s bag', (backInBag['sword_01'] ?? 
 // The hall is an index, not a party. It never held the sword, because it cannot
 // — it signs nothing at all.
 check('the shop never held the sword any of this was about', (await economy.inventoryOf(economy.address))['sword_01'] === undefined)
+
+// ------------------------------------------------------------------ issue #14
+//
+// A lot of ten is not ten lots of one, and an offer's `want` leg is the whole
+// lot. The auction's Ask box was labelled `Ask`, seeded with the catalogue's
+// per-unit `value`, and then spent as that leg — so stepping the quantity to ten
+// and trusting the number the panel had already put there signed an offer at a
+// tenth of the price on screen, on a lot ten times as large.
+//
+// `priceLot` is now the only place a per-unit ask is multiplied by a quantity and
+// `lotOffer` the only place the two legs are built, so the distinction has one
+// home instead of being re-derived by every caller.
+
+const EACH = 25
+const LOT = 10
+
+const priced = priceLot(EACH, LOT)
+check('a per-unit ask times a quantity is the lot total', priced.total === EACH * LOT, `${priced.total}`)
+check('and the lot goes on saying which number was which', priced.each === EACH && priced.qty === LOT)
+check('one of something is the only case where the two agree', priceLot(EACH, 1).total === EACH)
+
+// The refusals. A listing that cannot settle for exactly what it displayed is
+// worse than one that will not publish.
+const refuses = (each: number, qty: number): string => {
+  try {
+    priceLot(each, qty)
+    return ''
+  } catch (error) {
+    return (error as Error).message
+  }
+}
+check('a fractional ask is refused, in a sentence', refuses(2.5, 4).includes('whole number of gold'), refuses(2.5, 4))
+check('a free lot is refused', refuses(0, 4) !== '')
+check('half an item is refused', refuses(25, 1.5).includes('whole number of them'), refuses(25, 1.5))
+check(
+  'and a total no ledger could count is refused rather than quietly rounded',
+  refuses(Number.MAX_SAFE_INTEGER, 2).includes('more gold than this world can count'),
+  refuses(Number.MAX_SAFE_INTEGER, 2),
+)
+
+// The report's own case, against the real signing path: ten units at 25 each is
+// an offer for 250 gold, not for 25.
+const potion = catalogue.items.find((item) => item.key === 'potion_small_red')!
+await economy.deliver(seller.address, 'potion_small_red', LOT)
+await until(async () => ((await economy.inventoryOf(seller.address))['potion_small_red'] ?? 0) >= LOT)
+await seller.sync()
+
+const lot = await seller.market.offer(lotOffer(potion.asset, catalogue.coin.asset, priced))
+check('the lot puts every unit on the block', lot.give.amount === LOT, `${lot.give.amount}`)
+check('and asks the lot total rather than the unit price', lot.want.amount === EACH * LOT, `${lot.want.amount}`)
+check('so the ledger agrees about what one of them costs', lot.price === EACH, `${lot.price}`)
+
+// And the hall reads it back the way the browse pane has always rendered it,
+// which is the asymmetry the report is about: the buying side said "250 gold for
+// 10 (25 each)" while the selling side had put 25 in the box.
+economy.hall.watch(seller.address)
+const board = await economy.hall.read()
+const lotStall = board.listings.find((entry) => entry.hash === lot.hash)
+check('the hall shows the lot total and the unit price', lotStall?.price === EACH * LOT && lotStall?.each === EACH, JSON.stringify(lotStall))
+check(
+  'and a buyer clicking it is bound to both',
+  offerMatchesDisplay(lot, { hash: lot.hash, seller: lot.from, qty: LOT, price: EACH * LOT }, potion.asset, catalogue.coin.asset),
+)
+check(
+  'a lot priced as though it were one unit does not match what was displayed',
+  !offerMatchesDisplay(lot, { hash: lot.hash, seller: lot.from, qty: LOT, price: EACH }, potion.asset, catalogue.coin.asset),
+)
+await seller.market.cancel(lot)
 
 console.log(failures === 0 ? '\nall good' : `\n${failures} failed`)
 process.exit(failures === 0 ? 0 : 1)
