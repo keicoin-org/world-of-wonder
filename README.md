@@ -304,6 +304,43 @@ GAME_SERVER=https://mmo.example.org npm run client-build
 With `GAME_SERVER` unset the old same-origin behaviour applies, which is what
 `client-dev` wants.
 
+**The server has to be told about that split too.** It used to be
+`app.use(cors())`, which answered every preflight with the caller's own origin —
+so any page a player happened to have open could call the economy routes from
+inside their browser (issue #22). Now the allow-list is `KEI_ALLOWED_ORIGINS`,
+and the same deployment reads:
+
+```sh
+KEI_ALLOWED_ORIGINS=https://keicoin.org npm run server-start
+```
+
+Three things it does without being asked, because each of them is a way an
+allow-list usually breaks something:
+
+- **Same-origin always works.** A deployment that serves its own client — which
+  is the default here, `Api.ts` mounts `dist/client` on the same express app —
+  needs no configuration to talk to itself.
+- **A fresh clone works.** With nothing set outside production, the webpack dev
+  server at `:8080` is allowed, because "clone and run" should not begin with a
+  CORS error.
+- **`NODE_ENV=production` allows nothing else by default.** A deployment that
+  serves its client from another origin has to say where, which is the whole
+  point.
+
+A malformed entry stops the server at startup rather than turning into a browser
+console message on somebody else's machine: `*` is refused by name, and so is a
+trailing slash or a path, neither of which a browser ever sends. No route asks
+for credentials — there are no session cookies, the login token is put in the
+request by the client holding it, and an order is authorized by the unguessable
+id `/kei/order` hands back (issue #13) — so there is nothing here for a
+cross-site request to ride on, and `Access-Control-Allow-Credentials` is never
+sent.
+
+None of this is a defence against a program. CORS is a rule browsers apply to
+themselves; `curl` ignores it and always will. It is a defence against somebody
+else's *page*, and it is defence in depth: every route still has to be safe on
+its own.
+
 The server is one bundled file. It reads `public/` and `database/` from its
 working directory, so start it from the project root:
 
@@ -313,7 +350,8 @@ working directory, so start it from the project root:
 | `KEI_NETWORK` | `testnet` (default), `mainnet`, or `mock`. Mainnet is not open and has no faucet, so it stops with an explanation rather than settling elsewhere. |
 | `KEI_NODE` | A node URL, overriding the public one for `KEI_NETWORK`. Unset is the normal case. A custom node is treated as persistent and requires `KEI_GAME_SEED`, including when labelled `mock`. |
 | `KEI_EXCHANGE` | `off` disables paying Kei for gold. SPEC §8 requires the game to be playable with payments off. |
-| `NODE_ENV` | `production` closes `/kei/grant`, never loads the Colyseus monitor, and turns off the latency simulation. |
+| `KEI_ALLOWED_ORIGINS` | Comma-separated origins whose pages may call this server, e.g. `https://keicoin.org`. Same-origin is always allowed and needs no entry. Unset means the dev server outside production and nothing at all inside it. A malformed entry — `*`, a trailing slash, a path — is a startup error. |
+| `NODE_ENV` | `production` closes `/kei/grant`, never loads the Colyseus monitor, turns off the latency simulation, and stops `KEI_ALLOWED_ORIGINS` defaulting to the dev server. |
 | `DATABASE_PATH` | Where sqlite keeps accounts and characters. Defaults to `./database.db`. |
 | `DATABASE_HOST` `DATABASE_DB` `DATABASE_USER` `DATABASE_PASSWORD` | mysql, read only when `database` in `src/shared/Config.ts` is `"mysql"`. |
 | `GAME_SERVER` | Build-time, not runtime — see above. |
