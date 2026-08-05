@@ -18,7 +18,7 @@ import axios from "axios";
 import { Kei, type Offer } from "kei-transaction";
 
 import { apiUrl, nodeUrl } from "../Utils/index";
-import { offerMatchesDisplay } from "../../shared/market";
+import { lotOffer, offerMatchesDisplay, priceLot } from "../../shared/market";
 
 export interface ShopItem {
     key: string;
@@ -311,7 +311,12 @@ export class Wallet {
     }
 
     /**
-     * List an item for gold.
+     * List an item for gold, at `each` gold per unit.
+     *
+     * Per unit, and named so, because the offer's `want` leg is the lot total and
+     * these are the same number only when `qty` is 1 (issue #14). `priceLot` does
+     * the multiply, refuses a price that cannot be settled exactly, and is the
+     * only thing in this repository that turns one into the other.
      *
      * `market.offer()`, not `market.sell()`: `sell()` prices in Kei, and this
      * world's money is gold — an asset it issues. The distinction compiles
@@ -321,14 +326,9 @@ export class Wallet {
      * leaves the bag the moment this returns and comes back only if the listing
      * is cancelled. Nobody else's asset is locked by any of this.
      */
-    public async list(key: string, price: number, qty: number = 1): Promise<Listing> {
+    public async list(key: string, each: number, qty: number = 1): Promise<Listing> {
         const item = this.mustKnow(key);
-        if (!Number.isInteger(price) || price < 1) {
-            throw new Error("Ask a whole number of gold, and at least 1.");
-        }
-        if (!Number.isInteger(qty) || qty < 1) {
-            throw new Error("List a whole number of them, and at least 1.");
-        }
+        const lot = priceLot(each, qty);
 
         await this.refresh();
         const held = this.inventory[key] ?? 0;
@@ -336,10 +336,7 @@ export class Wallet {
             throw new Error(`You have ${held} ${item.title} to list, not ${qty}.`);
         }
 
-        const offer = await this._kei.market.offer({
-            give: { asset: item.asset, amount: qty },
-            want: { asset: this._coin, amount: price },
-        });
+        const offer = await this._kei.market.offer(lotOffer(item.asset, this._coin, lot));
 
         await this.announce();
         await this.refresh();

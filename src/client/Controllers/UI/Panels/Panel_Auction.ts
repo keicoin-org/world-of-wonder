@@ -282,7 +282,10 @@ export class Panel_Auction extends Panel {
                     id: key,
                     key,
                     title: item.title + " x" + qty,
-                    note: "worth " + item.value + "g",
+                    // "each", because the browse and mine tabs put a lot total in
+                    // this same column, and a bare number beside an "x10" reads as
+                    // one of those (issue #14).
+                    note: "worth " + item.value + "g each",
                     held: qty,
                 });
             });
@@ -423,6 +426,14 @@ export class Panel_Auction extends Panel {
      * player asking 137 gold for something should not have to click 137 times,
      * and the number they choose is the only part of this the game has no
      * opinion about.
+     *
+     * The box is **per unit**, and everything visible says so: the label, the
+     * quote line under the form, and the confirmation once it is signed. It used
+     * to be labelled `Ask`, seeded with an item's per-unit shop price, and then
+     * spent as the lot total — so stepping the quantity to ten and trusting the
+     * number already in the box published a lot of ten at a tenth of the price on
+     * screen (issue #14). A field whose meaning changed as a sibling control moved
+     * was the failure; the quote line exists so the total is never implied.
      */
     private drawSell(row: Row) {
         const item = this.wallet ? this.wallet.priced(row.key) : undefined;
@@ -433,8 +444,8 @@ export class Panel_Auction extends Panel {
         // and its label. Every `left` below is the distance of that control's
         // right edge from the panel's, so the widths have to fit between them.
         const label = new TextBlock("auctionAsk");
-        label.text = "Ask";
-        label.width = "26px";
+        label.text = "Ask each";
+        label.width = "52px";
         label.height = "24px";
         label.left = "-234px";
         label.color = "rgba(255,255,255,.7)";
@@ -443,19 +454,21 @@ export class Panel_Auction extends Panel {
         label.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
         this.panelDetails.addControl(label);
 
-        const price = new InputText("auctionPrice");
-        price.width = "70px";
-        price.height = "24px";
-        price.left = "-158px";
-        price.color = "#FFF";
-        price.fontSize = "13px";
-        price.thickness = 0;
-        price.background = BACKGROUND;
-        price.placeholderText = "gold";
-        price.text = String(item ? item.value : 1);
-        price.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT;
-        price.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
-        this.panelDetails.addControl(price);
+        const each = new InputText("auctionEach");
+        each.width = "70px";
+        each.height = "24px";
+        each.left = "-158px";
+        each.color = "#FFF";
+        each.fontSize = "13px";
+        each.thickness = 0;
+        each.background = BACKGROUND;
+        each.placeholderText = "gold each";
+        // The catalogue's `value` is the price of one, which is the right seed for
+        // a per-unit box and was the wrong one for a lot total.
+        each.text = String(item ? item.value : 1);
+        each.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT;
+        each.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
+        this.panelDetails.addControl(each);
 
         const quantity = new TextBlock("auctionQty");
         quantity.width = "34px";
@@ -467,6 +480,37 @@ export class Panel_Auction extends Panel {
         quantity.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_RIGHT;
         quantity.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
         this.panelDetails.addControl(quantity);
+
+        /**
+         * What this form is currently offering, in the same words the browse pane
+         * uses for somebody else's listing. Written from the two live controls
+         * rather than from either one, so the number the player is about to sign
+         * is on screen before they sign it.
+         */
+        const quote = (): string => {
+            const asked = Number(each.text.trim());
+            if (!Number.isInteger(asked) || asked < 1) {
+                return "Ask a whole number of gold for one of them, and at least 1.";
+            }
+            return qty > 1
+                ? asked * qty + " gold for " + qty + " (" + asked + " each)."
+                : asked + " gold for it.";
+        };
+
+        const lines = (): string[] => [
+            quote(),
+            "Listing locks it on your own chain, so it leaves your bag until it sells or you cancel it.",
+            item && item.buyback > 0 ? "The shop would pay " + item.buyback + "g for one." : "The shop will not buy this.",
+            describeHistory(this.view.history[row.key]),
+        ];
+
+        const body = this.describe(item ? item.title : row.key, lines(), 0.34);
+        const requote = () => {
+            body.text = lines()
+                .filter((line) => line !== "")
+                .join("\n");
+        };
+        each.onTextChangedObservable.add(requote);
 
         const step = (name: string, text: string, left: string, by: number) => {
             const btn = Button.CreateSimpleButton(name, text);
@@ -483,6 +527,7 @@ export class Panel_Auction extends Panel {
                 if (this.busy) return;
                 qty = Math.min(most, Math.max(1, qty + by));
                 quantity.text = "x" + qty;
+                requote();
             });
             this.panelDetails.addControl(btn);
         };
@@ -492,18 +537,8 @@ export class Panel_Auction extends Panel {
         const action = this.actionButton("List", "orange");
         action.onPointerClickObservable.add(() => {
             if (this.busy) return;
-            void this.list(row, Number(price.text.trim()), qty);
+            void this.list(row, Number(each.text.trim()), qty);
         });
-
-        this.describe(
-            item ? item.title : row.key,
-            [
-                "Listing locks it on your own chain, so it leaves your bag until it sells or you cancel it.",
-                item && item.buyback > 0 ? "The shop would pay " + item.buyback + "g for one." : "The shop will not buy this.",
-                describeHistory(this.view.history[row.key]),
-            ],
-            0.4
-        );
     }
 
     private actionButton(label: string, background: string): Button {
@@ -522,8 +557,14 @@ export class Panel_Auction extends Panel {
         return btn;
     }
 
-    /** `titleWidth` leaves room for whatever sits along the top of the block. */
-    private describe(title: string, lines: string[], titleWidth: number = 0.6) {
+    /**
+     * `titleWidth` leaves room for whatever sits along the top of the block.
+     *
+     * Returns the body block, so a form whose numbers change while it is on screen
+     * can rewrite what it says about them without redrawing the controls the
+     * player is typing into.
+     */
+    private describe(title: string, lines: string[], titleWidth: number = 0.6): TextBlock {
         const name = new TextBlock("auctionName");
         name.text = title;
         name.color = "#FFF";
@@ -553,6 +594,7 @@ export class Panel_Auction extends Panel {
         body.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_LEFT;
         body.verticalAlignment = Control.VERTICAL_ALIGNMENT_TOP;
         this.panelDetails.addControl(body);
+        return body;
     }
 
     // --------------------------------------------------------------- trading
@@ -575,16 +617,24 @@ export class Panel_Auction extends Panel {
         }
     }
 
-    private async list(row: Row, price: number, qty: number): Promise<void> {
+    /** `each` is gold per unit, which is what the form asks for. */
+    private async list(row: Row, each: number, qty: number): Promise<void> {
         this.busy = true;
         this.say("Publishing the listing...");
         try {
-            const listing = await this.wallet.list(row.key, price, qty);
+            const listing = await this.wallet.list(row.key, each, qty);
             this.tab = "mine";
             this.selected = listing.hash;
             this.highlightTabs();
             await this.after();
-            this.say("Listed for " + listing.price + " gold. It is locked until it sells.", "lightgreen");
+            // Both numbers, read back off the offer rather than off this form, so
+            // the confirmation is what the chain now says and not what was typed.
+            this.say(
+                listing.qty > 1
+                    ? "Listed " + listing.qty + " for " + listing.price + " gold (" + round(listing.each) + " each). It is locked until it sells."
+                    : "Listed for " + listing.price + " gold. It is locked until it sells.",
+                "lightgreen"
+            );
         } catch (error) {
             await this.after();
             this.say(error.message, "orange");

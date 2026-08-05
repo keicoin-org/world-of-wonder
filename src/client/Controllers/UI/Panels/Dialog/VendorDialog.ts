@@ -26,7 +26,11 @@ import { Panel_Dialog } from "../..";
 interface Row {
     key: string;
     title: string;
-    /** What this costs to buy, or pays to sell. */
+    /**
+     * What **one** costs to buy, or pays to sell — per unit, unlike the auction's
+     * `Listing.price`, which is a lot total. Every use below multiplies it by the
+     * stepper's quantity, and confusing the two is issue #14.
+     */
     price: number;
     /** How many the chain says the player holds. */
     held: number;
