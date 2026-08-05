@@ -9,21 +9,33 @@
  * Mounted under /kei so it cannot collide with upstream's /login and /characters.
  */
 
+import { isAddress } from 'kei-transaction'
+
 import { STARTING_GOLD, type Economy } from './Economy'
 import Logger from '../utils/Logger'
 
-/**
- * An address names somebody; it does not authenticate them. Every hall listing
- * prints one, so a route that takes an address has been told who a player is and
- * nothing at all about who is asking.
- *
- * That is enough for the read-only routes below, where a leak costs nothing and
- * the one write grants nothing. It was never enough for `/kei/order`, which is
- * the only thing that decides what an arriving payment buys — see the order id
- * there, and issue #13 for what that route was like without one.
- */
-const looksLikeAddress = (value: unknown): value is string =>
-  typeof value === 'string' && /^kei_[a-z0-9]{50,70}$/.test(value)
+// An address names somebody; it does not authenticate them. Every hall listing
+// prints one, so a route that takes an address has been told who a player is and
+// nothing at all about who is asking.
+//
+// That is enough for the read-only routes below, where a leak costs nothing and
+// the one write grants nothing. It was never enough for `/kei/order`, which is
+// the only thing that decides what an arriving payment buys — see the order id
+// there, and issue #13 for what that route was like without one.
+//
+// What the openness does not excuse is checking the address with a regex.
+// `looksLikeAddress` used to live here as `/^kei_[a-z0-9]{50,70}$/`, and it was
+// wrong in three independent ways: a real body is exactly 60 characters rather
+// than 50 to 70, it is drawn from Nano's base32 alphabet, which excludes `0`,
+// `2`, `l` and `v`, and its last 8 characters are a blake2b checksum over the
+// public key that the regex never computed. `isAddress` does all three, and has
+// been exported by the SDK the whole time (issue #18).
+//
+// The cost of the gap was not a worse error message. `/kei/hall/watch` writes
+// into a 128-entry roster that evicts by insertion order, so 128 anonymous POSTs
+// of syntactically-plausible nonsense evicted every real seller — and the SDK's
+// market walk refuses the whole read on the first address it cannot parse, so
+// what a player got afterwards was not an empty auction house but a 502.
 
 /** An order id as `Economy.order()` writes them: 24 random bytes in hex. */
 const looksLikeOrderId = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{48}$/.test(value)
@@ -37,7 +49,7 @@ export function mountEconomyApi(app: any, economy: Economy): void {
   /** What the chain says this address holds. Cheap enough to poll. */
   app.get('/kei/wallet/:address', async (request: any, response: any) => {
     const address = request.params.address
-    if (!looksLikeAddress(address)) {
+    if (!isAddress(address)) {
       return response.status(400).json({ error: 'That is not a Kei address.' })
     }
     try {
@@ -66,7 +78,7 @@ export function mountEconomyApi(app: any, economy: Economy): void {
     const key = request.query.key
     const qty = Number(request.query.qty ?? 1)
 
-    if (!looksLikeAddress(address)) {
+    if (!isAddress(address)) {
       return response.status(400).json({ error: 'That is not a Kei address.' })
     }
     if (typeof key !== 'string' || key === '') {
@@ -141,7 +153,7 @@ export function mountEconomyApi(app: any, economy: Economy): void {
    */
   app.post('/kei/hall/watch', (request: any, response: any) => {
     const address = request.query.address
-    if (!looksLikeAddress(address)) {
+    if (!isAddress(address)) {
       return response.status(400).json({ error: 'That is not a Kei address.' })
     }
     economy.hall.watch(address)
@@ -163,7 +175,7 @@ export function mountEconomyApi(app: any, economy: Economy): void {
 
     const address = request.query.address
     const amount = Number(request.query.amount ?? STARTING_GOLD)
-    if (!looksLikeAddress(address)) {
+    if (!isAddress(address)) {
       return response.status(400).json({ error: 'That is not a Kei address.' })
     }
     if (!Number.isInteger(amount) || amount < 1 || amount > 10_000) {
