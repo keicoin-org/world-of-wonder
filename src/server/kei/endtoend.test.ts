@@ -32,6 +32,41 @@ async function until(predicate: () => Promise<boolean>, ms = 15_000): Promise<bo
 const catalogue = await (await fetch(`${BASE}/kei/catalogue`)).json()
 check('the shop answers over HTTP', Array.isArray(catalogue.items) && catalogue.items.length > 0)
 
+// --------------------------------------------------------------- issue #22
+//
+// Who a browser will let call this server. Asked over the wire because the
+// header is the whole mechanism: a policy that is right in `Origins.ts` and
+// missing from the response has done nothing at all.
+//
+// Note what is *not* checked — that a stranger's request fails. It does not, and
+// cannot: CORS is a rule browsers apply to themselves after the response
+// arrives, so the body below is fetched perfectly well by this test, which is
+// not a browser. What decides whether a page may read it is the header.
+const allowFor = async (origin: string): Promise<string | null> => {
+  const response = await fetch(`${BASE}/kei/catalogue`, { headers: { Origin: origin } })
+  return response.headers.get('access-control-allow-origin')
+}
+
+check('a page served by the dev server may call the shop', (await allowFor('http://localhost:8080')) === 'http://localhost:8080')
+check("a page the player merely had open may not", (await allowFor('https://evil.example')) === null)
+check('and neither may a lookalike of an allowed origin', (await allowFor('http://localhost:8080.evil.example')) === null)
+
+// A preflight is the only thing a browser sends before a cross-site POST to the
+// money routes, so it is the one that has to refuse.
+const preflight = await fetch(`${BASE}/kei/order?address=kei_x&key=sword_01`, {
+  method: 'OPTIONS',
+  headers: { Origin: 'https://evil.example', 'Access-Control-Request-Method': 'POST' },
+})
+check(
+  'a cross-site preflight to the order route is not granted',
+  preflight.headers.get('access-control-allow-origin') === null,
+  String(preflight.status),
+)
+check(
+  'and nothing offers to carry credentials',
+  preflight.headers.get('access-control-allow-credentials') === null,
+)
+
 // A client has to be able to price both directions without asking, because the
 // selling direction has no route to ask.
 const sword = catalogue.items.find((item: any) => item.key === 'sword_01')

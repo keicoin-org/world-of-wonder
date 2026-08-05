@@ -12,6 +12,7 @@ import { EquipmentSchema, HotbarSchema, PlayerSchema, QuestSchema } from "./room
 // resolver and stops the moment anything modern looks at it.
 import { MapSchema } from "@colyseus/schema";
 import { Config } from "../shared/Config";
+import type { RewardState, RewardStore, StoredLeg, StoredReward } from "./kei/Outbox";
 
 class Database {
     private debug: boolean = true;
@@ -315,6 +316,197 @@ class Database {
         return this.querier.run(sql, [entry.id, entry.characterId, entry.address, entry.gold, entry.items, Date.now()] as any);
     }
 
+    ///////////////////////////////////////
+    /////////// REWARD OUTBOX /////////////
+    ///////////////////////////////////////
+    //
+    // The storage half of src/server/kei/Outbox.ts, which is where the state
+    // machine and the reasoning behind it live. Two properties are load-bearing
+    // and neither is obvious from the SQL, so they are worth saying here too:
+    //
+    // Every write below is either a single statement or idempotent, because
+    // neither adapter in this repo gives out a transaction. Authoring a reward is
+    // one INSERT whose payload contains the whole intent; the per-leg rows are
+    // derived from it later and re-deriving them writes nothing.
+    //
+    // Claiming work is a compare-and-swap, not a read followed by a write.
+    // `change()` reports how many rows an UPDATE actually matched, and a claim
+    // that matched nothing means another worker has the reward. That is what
+    // stops two processes minting the same leg.
+
+    /** SQLite and MySQL spell "insert unless it is already there" differently. */
+    private get insertIgnore(): string {
+        return this._config.database === "mysql" ? "INSERT IGNORE INTO" : "INSERT OR IGNORE INTO";
+    }
+
+    /** The outbox's store, bound to this connection. */
+    rewardStore(): RewardStore {
+        return {
+            enqueue: (reward) => this.enqueueReward(reward),
+            find: (id) => this.findReward(id),
+            due: (now, limit) => this.dueRewards(now, limit),
+            claim: (id, now, until) => this.claimReward(id, now, until),
+            patch: (id, fields) => this.patchReward(id, fields),
+            addLeg: (leg) => this.addRewardLeg(leg),
+            legs: (id) => this.rewardLegs(id),
+            patchLeg: (id, leg, fields) => this.patchRewardLeg(id, leg, fields),
+            compact: (before) => this.compactRewardOutbox(before),
+            counts: (now) => this.rewardOutboxCounts(now),
+        };
+    }
+
+    async enqueueReward(reward: StoredReward): Promise<boolean> {
+        const sql =
+            this.insertIgnore +
+            " reward_outbox (`id`, `owner_id`, `address`, `issuer`, `payload`, `replayable`, `state`, `attempts`, `lease_until`, `reason`, `enqueued_at`, `settled_at`)" +
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)";
+        const written = await this.querier.change(sql, [
+            reward.id,
+            reward.characterId,
+            reward.address,
+            reward.issuer,
+            reward.payload,
+            reward.replayable ? 1 : 0,
+            reward.state,
+            reward.attempts,
+            reward.leaseUntil,
+            reward.reason,
+            reward.enqueuedAt,
+            reward.settledAt,
+        ] as any);
+        return written > 0;
+    }
+
+    async findReward(id: string): Promise<StoredReward | undefined> {
+        const row = await this.querier.get("SELECT * FROM reward_outbox WHERE id=?;", [id]);
+        return row ? toStoredReward(row) : undefined;
+    }
+
+    // Oldest first, so a reward that has been waiting the longest is the one that
+    // gets the next attempt. `lease_until` doubles as the retry backoff: a worker
+    // that gave up on a reward sets it to zero and a worker that is still on one
+    // holds it until its lease runs out.
+    async dueRewards(now: number, limit: number): Promise<StoredReward[]> {
+        const sql = "SELECT * FROM reward_outbox WHERE state='pending' AND lease_until<=? ORDER BY enqueued_at ASC LIMIT ?;";
+        const rows = await this.querier.all(sql, [now, limit] as any);
+        return (rows ?? []).map(toStoredReward);
+    }
+
+    async claimReward(id: string, now: number, until: number): Promise<boolean> {
+        const sql = "UPDATE reward_outbox SET lease_until=? WHERE id=? AND state='pending' AND lease_until<=?;";
+        return (await this.querier.change(sql, [until, id, now] as any)) === 1;
+    }
+
+    async patchReward(id: string, fields: Partial<StoredReward>): Promise<void> {
+        const columns = { state: "state", address: "address", reason: "reason", leaseUntil: "lease_until", attempts: "attempts", settledAt: "settled_at" };
+        const sets: string[] = [];
+        const params: any[] = [];
+        for (const [field, column] of Object.entries(columns)) {
+            if (!(field in fields)) continue;
+            sets.push("`" + column + "`=?");
+            params.push((fields as any)[field]);
+        }
+        if (sets.length === 0) return;
+        params.push(id);
+        await this.querier.run("UPDATE reward_outbox SET " + sets.join(", ") + " WHERE id=?;", params as any);
+    }
+
+    async addRewardLeg(leg: StoredLeg): Promise<void> {
+        const sql =
+            this.insertIgnore +
+            " reward_outbox_legs (`reward_id`, `leg`, `kind`, `key`, `units`, `state`, `attempts`, `previous`, `receipt`, `error`)" +
+            " VALUES (?,?,?,?,?,?,?,?,?,?)";
+        await this.querier.change(sql, [
+            leg.rewardId,
+            leg.leg,
+            leg.kind,
+            leg.key,
+            leg.units,
+            leg.state,
+            leg.attempts,
+            leg.previous,
+            leg.receipt,
+            leg.error,
+        ] as any);
+    }
+
+    async rewardLegs(id: string): Promise<StoredLeg[]> {
+        const rows = await this.querier.all("SELECT * FROM reward_outbox_legs WHERE reward_id=? ORDER BY leg ASC;", [id]);
+        return (rows ?? []).map((row: any) => ({
+            rewardId: row.reward_id,
+            leg: Number(row.leg),
+            kind: row.kind,
+            key: row.key,
+            // Left as the string it was written as. Parsing it into a number here
+            // would undo the reason it is a string.
+            units: String(row.units),
+            state: row.state,
+            attempts: Number(row.attempts ?? 0),
+            previous: row.previous ?? null,
+            receipt: row.receipt ?? null,
+            error: row.error ?? null,
+        }));
+    }
+
+    async patchRewardLeg(id: string, leg: number, fields: Partial<StoredLeg>): Promise<void> {
+        const columns = { state: "state", attempts: "attempts", previous: "previous", receipt: "receipt", error: "error" };
+        const sets: string[] = [];
+        const params: any[] = [];
+        for (const [field, column] of Object.entries(columns)) {
+            if (!(field in fields)) continue;
+            sets.push("`" + column + "`=?");
+            params.push((fields as any)[field]);
+        }
+        if (sets.length === 0) return;
+        params.push(id, leg);
+        await this.querier.run("UPDATE reward_outbox_legs SET " + sets.join(", ") + " WHERE reward_id=? AND leg=?;", params as any);
+    }
+
+    /**
+     * Retention, which the outbox needs from its first day: it grows with every
+     * kill and every quest and nothing else would ever remove a row.
+     *
+     * Only settled rewards past the cutoff are touched. Pending work is the queue
+     * and held work is waiting for a person, so deleting either would be losing
+     * somebody's reward to save a kilobyte.
+     *
+     * The legs and the payload are the bulk and they go. The row itself can only
+     * go when ordinary play could not author the same id again — a loot pickup or
+     * a kill, whose id is an entity that no longer exists. A quest's id is a
+     * character and a quest key, so a re-accepted quest would produce it a second
+     * time, and an empty row is what refuses to pay for it twice. That leaves a
+     * tombstone set bounded by characters times quests rather than by playtime.
+     */
+    async compactRewardOutbox(before: number): Promise<{ removed: number; tombstoned: number }> {
+        const settled = "SELECT id FROM reward_outbox WHERE state='settled' AND settled_at IS NOT NULL AND settled_at<?";
+        await this.querier.run("DELETE FROM reward_outbox_legs WHERE reward_id IN (" + settled + ");", [before] as any);
+        const removed = await this.querier.change(
+            "DELETE FROM reward_outbox WHERE state='settled' AND settled_at IS NOT NULL AND settled_at<? AND replayable=0;",
+            [before] as any
+        );
+        const tombstoned = await this.querier.change(
+            "UPDATE reward_outbox SET payload='', address=NULL, reason=NULL WHERE state='settled' AND settled_at IS NOT NULL AND settled_at<? AND replayable=1 AND payload<>'';",
+            [before] as any
+        );
+        return { removed, tombstoned };
+    }
+
+    async rewardOutboxCounts(now: number): Promise<{ pending: number; settled: number; held: number; oldestPendingAge: number }> {
+        const rows = await this.querier.all("SELECT state, COUNT(*) AS total FROM reward_outbox GROUP BY state;", []);
+        const totals: Record<string, number> = {};
+        for (const row of rows ?? []) {
+            totals[(row as any).state] = Number((row as any).total ?? 0);
+        }
+        const oldest = await this.querier.get("SELECT MIN(enqueued_at) AS oldest FROM reward_outbox WHERE state='pending';", []);
+        const at = Number((oldest as any)?.oldest ?? 0);
+        return {
+            pending: totals["pending"] ?? 0,
+            settled: totals["settled"] ?? 0,
+            held: totals["held"] ?? 0,
+            oldestPendingAge: at > 0 ? Math.max(0, now - at) : 0,
+        };
+    }
+
     // removes and saves character items
     // terrible way to do it
     //
@@ -395,6 +587,26 @@ class Database {
         const sql = `SELECT COUNT(id) as count FROM users WHERE username=? ;`;
         return this.querier.get(sql, [name]);
     }
+}
+
+// MySQL hands `bigint` back as a string and SQLite as a number, and the outbox
+// compares these against a clock, so they are normalized in one place rather
+// than at every comparison.
+function toStoredReward(row: any): StoredReward {
+    return {
+        id: row.id,
+        characterId: Number(row.owner_id),
+        address: row.address ?? null,
+        issuer: row.issuer ?? "",
+        payload: row.payload ?? "",
+        replayable: Number(row.replayable ?? 0) === 1,
+        state: (row.state ?? "pending") as RewardState,
+        attempts: Number(row.attempts ?? 0),
+        leaseUntil: Number(row.lease_until ?? 0),
+        reason: row.reason ?? null,
+        enqueuedAt: Number(row.enqueued_at ?? 0),
+        settledAt: row.settled_at === null || row.settled_at === undefined ? null : Number(row.settled_at),
+    };
 }
 
 export { Database };

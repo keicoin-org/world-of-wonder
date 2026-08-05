@@ -7,7 +7,7 @@
 
 import { openStartupChain, type Chain, type ChainConfiguration } from './node'
 import { DB_MYSQL } from '../utils/database/mysql'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -193,6 +193,43 @@ check(
     issued.some((fragment) => /^CREATE TABLE IF NOT EXISTS `reward_payments`/i.test(statementOf(fragment))),
     `${issued.length} fragments`
 )
+
+// This file runs in full on every boot, so what it does the second time is what
+// it does for the rest of a deployment's life. It used to open each gameplay
+// table with DROP TABLE IF EXISTS, which is why `characters.id` restarted at 1
+// while `reward_payments` and `reward_outbox` kept rows naming those ids — a
+// reward authored for one player resolving to whoever inherited the number
+// (issue #21). Nothing in here may drop a table.
+const drops = issued.map(statementOf).filter((statement) => /^DROP\b/i.test(statement))
+check('no boot of the mysql schema drops a table', drops.length === 0, drops.join(' | '))
+
+// The other half of the same property, and the reason the drops were there:
+// `ALTER TABLE ... ADD PRIMARY KEY` is an error against a table that already has
+// one, so a schema that establishes its keys by ALTER can only be re-run after
+// throwing the table away. Keys belong inside CREATE TABLE IF NOT EXISTS, which
+// is a no-op on the second boot.
+const rerunnable = (statement: string): boolean =>
+    /^CREATE TABLE IF NOT EXISTS\b/i.test(statement) || /^(SET|USE)\b/i.test(statement)
+const notIdempotent = issued.map(statementOf).filter((statement) => statement !== '' && !rerunnable(statement))
+check(
+    'every statement in it can be run again on the next boot',
+    notIdempotent.length === 0,
+    notIdempotent.map((statement) => JSON.stringify(statement.slice(0, 60))).join(' | ')
+)
+
+// Both adapters have to describe the same world, because which one a deployment
+// picked is not something any caller of Database.ts knows. The drops were the
+// one place they disagreed about a table's lifetime.
+const tablesIn = (sql: string): string[] =>
+    [...sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+[`"]([a-z_]+)[`"]/gi)].map((match) => match[1]).sort()
+const mysqlTables = tablesIn(readFileSync(resolve(process.cwd(), 'database/mysql.sql'), 'utf8'))
+const sqliteTables = tablesIn(readFileSync(resolve(process.cwd(), 'database/sqllite.sql'), 'utf8'))
+check(
+    'both adapters create the same tables',
+    mysqlTables.join(',') === sqliteTables.join(','),
+    `mysql ${mysqlTables.join(',')} vs sqlite ${sqliteTables.join(',')}`
+)
+check('and characters is one of them', mysqlTables.includes('characters'))
 
 console.log(failures === 0 ? '\nall good\n' : `\n${failures} failed\n`)
 process.exit(failures === 0 ? 0 : 1)

@@ -11,11 +11,13 @@ import { ChatRoom } from "./rooms/ChatRoom";
 
 import { Api } from "./Api";
 import { Database } from "./Database";
+import { describeOrigins, originAllowed, readAllowedOrigins } from "./Origins";
 
 import { startEconomy, type Economy } from "./kei/Economy";
 import { mountEconomyApi } from "./kei/api";
 import { mountNodeRpc, openStartupChain } from "./kei/node";
 import { openInventoryAuthority, proofUnavailable, useInventoryAuthority } from "./kei/Inventory";
+import { openOutbox } from "./kei/Outbox";
 
 import Logger from "./utils/Logger";
 import { keepProcessAlive, mountFailsafeResponder } from "./utils/Failsafe";
@@ -72,26 +74,92 @@ class GameServer {
         // check, every authorization below refuses, loot and quest rewards go
         // unpaid rather than into a database, and the old tables sit untouched.
         // That is the safety mode, and it is deliberately the loud kind.
-        useInventoryAuthority(
-            openInventoryAuthority({
-                economy: this.economy,
-                verify: proofUnavailable,
-                payments: {
-                    paid: (id) => this.database.hasPaidReward(id),
-                    record: (entry) => this.database.recordRewardPayment(entry),
-                },
-            })
-        );
+        const authority = openInventoryAuthority({
+            economy: this.economy,
+            verify: proofUnavailable,
+            payments: {
+                paid: (id) => this.database.hasPaidReward(id),
+                record: (entry) => this.database.recordRewardPayment(entry),
+            },
+        });
+        useInventoryAuthority(authority);
         Logger.warning(
             "[kei] wallet-session proof is not built yet, so no character is bound to an address: loot, quest rewards and pickups are refused rather than written to the database (issue #6)"
         );
+
+        // The durable half of paying a reward (issue #9). Nothing enqueues into it
+        // yet — loot, quests, and equipment still go through
+        // `InventoryAuthority.pay()`, which is at-most-once and gives up quietly —
+        // so what this does today is run the queue, the reconciler, and the
+        // retention sweep against an empty table where they can be watched.
+        //
+        // Delivery is off unless a deployment turns it on. That is the sequencing
+        // issue #9 asks for: the workers and the reconciliation ship, get observed
+        // making no chain writes, and become the rollback floor before anything is
+        // allowed to sign a mint.
+        const outbox = openOutbox({
+            store: this.database.rewardStore(),
+            issuance: this.economy.issuance,
+            // Asked at delivery, never stored from a client. A reward written down
+            // while nobody could prove a wallet is paid once somebody can.
+            addressOf: (characterId) => authority.addressOf(characterId),
+            deliver: process.env.KEI_REWARD_DELIVERY === "on",
+        });
+
+        // There used to be a MySQL-only startup quarantine here, because that
+        // adapter dropped and recreated `characters` on every boot and a reward id
+        // names a character by an id that therefore meant somebody else after a
+        // restart. `database/mysql.sql` no longer drops anything, so the reuse it
+        // defended against cannot happen — and leaving it would have been worse
+        // than useless: holding the whole pending queue on every boot means this
+        // adapter never delivers a reward at all (issue #21).
+        //
+        // Nothing pending predates that change. Under the old code the last boot
+        // that dropped the table also held everything then pending, and `held` is
+        // terminal, so every row still pending was enqueued against the character
+        // table that is now kept. `outbox.quarantine()` stays on the interface for
+        // an operator who needs it.
+
+        const rewardTicker = setInterval(() => {
+            void outbox.drain().catch((error) => Logger.error("[outbox] a delivery pass failed", error));
+        }, 5_000);
+        const rewardSweeper = setInterval(() => {
+            void outbox.compact().catch((error) => Logger.error("[outbox] compaction failed", error));
+        }, 60_000);
+        // Nothing here should hold the process open on its own.
+        rewardTicker.unref?.();
+        rewardSweeper.unref?.();
 
         //////////////////////////////////////////////////
         ///////////// COLYSEUS GAME SERVER ///////////////
         //////////////////////////////////////////////////
         const port = this.config.port;
         const app = express();
-        app.use(cors());
+
+        // Which pages may call this server, rather than all of them (issue #22).
+        //
+        // Read before anything is mounted so a misspelt entry stops the server
+        // here, where it says so, instead of turning into a CORS error in
+        // somebody's console a week later.
+        //
+        // `credentials` is off, and that is a statement rather than a default:
+        // no route on this server is authorized by anything a browser attaches
+        // on its own. There are no session cookies, the login token is put in
+        // the request by the client that holds it, and an order is authorized by
+        // the unguessable id `/kei/order` handed back (issue #13). So there is
+        // nothing here for a cross-site request to ride on, and asking browsers
+        // to send credentials would be inventing the problem.
+        const allowedOrigins = readAllowedOrigins(process.env);
+        app.use(
+            cors((request, done) => {
+                done(null, {
+                    origin: originAllowed(request.headers.origin, request.headers.host, allowedOrigins),
+                    credentials: false,
+                    methods: ["GET", "POST"],
+                });
+            })
+        );
+        Logger.info("[cors] " + describeOrigins(allowedOrigins));
         app.use(express.json());
 
         // The player's wallet lives in their browser and signs its own blocks,

@@ -218,12 +218,14 @@ mint the currency being traded.
 ```
 src/server/kei/Economy.ts       the issuer: gold, items, the shop. Read this one.
 src/server/kei/Inventory.ts     what the room is allowed to ask about ownership, and what it is refused
+src/server/kei/Outbox.ts        rewards written down before they are delivered, and reconciled after
 src/server/kei/Legacy.ts        the old database bag, kept and never acted on
 src/server/kei/Hall.ts          the auction house's list of chains to read. It signs nothing.
 src/server/kei/api.ts           the HTTP surface. Nothing here can move a player's money.
 src/server/kei/node.ts          which chain, and which account issues the money
 src/server/kei/Economy.test.ts  the rules, against a chain in-process
 src/server/kei/Inventory.test.ts the boundary: a SQLite row owns nothing, and a reward pays once
+src/server/kei/Outbox.test.ts   a reward interrupted at every step, and paid exactly once anyway
 src/server/kei/Market.test.ts   two players trading, with this server on neither leg
 src/server/kei/endtoend.test.ts the same things across a URL, the way a browser does it
 src/server/rooms/state/GameRoomState.ts       every message the room answers, and what none of them may cause
@@ -322,6 +324,43 @@ GAME_SERVER=https://mmo.example.org npm run client-build
 With `GAME_SERVER` unset the old same-origin behaviour applies, which is what
 `client-dev` wants.
 
+**The server has to be told about that split too.** It used to be
+`app.use(cors())`, which answered every preflight with the caller's own origin —
+so any page a player happened to have open could call the economy routes from
+inside their browser (issue #22). Now the allow-list is `KEI_ALLOWED_ORIGINS`,
+and the same deployment reads:
+
+```sh
+KEI_ALLOWED_ORIGINS=https://keicoin.org npm run server-start
+```
+
+Three things it does without being asked, because each of them is a way an
+allow-list usually breaks something:
+
+- **Same-origin always works.** A deployment that serves its own client — which
+  is the default here, `Api.ts` mounts `dist/client` on the same express app —
+  needs no configuration to talk to itself.
+- **A fresh clone works.** With nothing set outside production, the webpack dev
+  server at `:8080` is allowed, because "clone and run" should not begin with a
+  CORS error.
+- **`NODE_ENV=production` allows nothing else by default.** A deployment that
+  serves its client from another origin has to say where, which is the whole
+  point.
+
+A malformed entry stops the server at startup rather than turning into a browser
+console message on somebody else's machine: `*` is refused by name, and so is a
+trailing slash or a path, neither of which a browser ever sends. No route asks
+for credentials — there are no session cookies, the login token is put in the
+request by the client holding it, and an order is authorized by the unguessable
+id `/kei/order` hands back (issue #13) — so there is nothing here for a
+cross-site request to ride on, and `Access-Control-Allow-Credentials` is never
+sent.
+
+None of this is a defence against a program. CORS is a rule browsers apply to
+themselves; `curl` ignores it and always will. It is a defence against somebody
+else's *page*, and it is defence in depth: every route still has to be safe on
+its own.
+
 The server is one bundled file. It reads `public/` and `database/` from its
 working directory, so start it from the project root:
 
@@ -331,7 +370,8 @@ working directory, so start it from the project root:
 | `KEI_NETWORK` | `testnet` (default), `mainnet`, or `mock`. Mainnet is not open and has no faucet, so it stops with an explanation rather than settling elsewhere. |
 | `KEI_NODE` | A node URL, overriding the public one for `KEI_NETWORK`. Unset is the normal case. A custom node is treated as persistent and requires `KEI_GAME_SEED`, including when labelled `mock`. |
 | `KEI_EXCHANGE` | `off` disables paying Kei for gold. SPEC §8 requires the game to be playable with payments off. |
-| `NODE_ENV` | `production` closes `/kei/grant`, never loads the Colyseus monitor, and turns off the latency simulation. |
+| `KEI_ALLOWED_ORIGINS` | Comma-separated origins whose pages may call this server, e.g. `https://keicoin.org`. Same-origin is always allowed and needs no entry. Unset means the dev server outside production and nothing at all inside it. A malformed entry — `*`, a trailing slash, a path — is a startup error. |
+| `NODE_ENV` | `production` closes `/kei/grant`, never loads the Colyseus monitor, turns off the latency simulation, and stops `KEI_ALLOWED_ORIGINS` defaulting to the dev server. |
 | `DATABASE_PATH` | Where sqlite keeps accounts and characters. Defaults to `./database.db`. |
 | `DATABASE_HOST` `DATABASE_DB` `DATABASE_USER` `DATABASE_PASSWORD` | mysql, read only when `database` in `src/shared/Config.ts` is `"mysql"`. |
 | `GAME_SERVER` | Build-time, not runtime — see above. |
@@ -371,10 +411,34 @@ variable. A host that assigns you a port expects that file to be edited.
      the signature — is a `ProofVerifier` parameter waiting for a function.
   2. **Loot, quest payouts, and pickups start paying.** These are already
      written and tested; they refuse only because step 1 has not happened.
-     This is not a backlog: a quest completed while proof is unavailable stays
-     complete and permanently unpaid. Payment ids prevent duplicate minting;
-     they do not provide eventual delivery or retroactive payout, which needs a
-     separate durable retry/backfill design before wallet binding ships.
+
+     They refuse *and forget*, which is the part worth being precise about.
+     `InventoryAuthority.pay()` is at-most-once: a payment id is recorded before
+     anything is minted, so a reward is never issued twice. At-most-once is not
+     delivery. A quest completed today is marked complete, refused, and leaves
+     nothing durable behind, so enabling step 1 later pays nothing for it.
+
+     [`src/server/kei/Outbox.ts`](src/server/kei/Outbox.ts) is the mechanism that
+     closes that, and it is merged. A reward is written down before it is
+     delivered and stays written down until every leg of it has a chain block
+     behind it, so one authored while no wallet could be proved is paid once one
+     can, without the client re-sending anything. An ambiguous chain timeout is
+     reconciled by block identity — the issuer's frontier is recorded before the
+     mint, an account chain is linear and single-writer, so whatever occupies that
+     position afterwards is the answer — and never by reading a balance, which
+     players are free to change themselves. Retention is `compact()`: a settled
+     reward loses its legs and payload after a week, one whose id ordinary play
+     could not author again loses its row too, and the rest keep an empty row,
+     which bounds the leftovers by characters times quests rather than by
+     playtime. Pending and held work is never swept and is counted in one log
+     line so a backlog is visible.
+
+     What is open is the wiring. Nothing enqueues into the outbox yet: loot,
+     quests, and equipment still go through `pay()`, and delivery is off unless
+     `KEI_REWARD_DELIVERY=on`. The completions already refused under phase one
+     have no reward row to derive a payload from and are forfeited — the honest
+     way to recover a development one is to run the quest again. Issue #6 tracks
+     moving each producer onto the outbox.
   3. **Equipping and consuming a chain-owned item.** The room needs to load a
      proven wallet's holdings into `player_data.inventory` on join and
      revalidate before each use, and `PLAYER_USE_ITEM` needs to take an item key
