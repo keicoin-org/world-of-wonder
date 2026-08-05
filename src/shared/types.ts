@@ -87,6 +87,10 @@ export enum ServerMsg {
     // wire format and its numbering is the protocol.
     PLAYER_BUY_ITEM,
     PLAYER_SELL_ITEM,
+    // Nor these four. They were registered in every build with nothing behind
+    // them, next to a hotbar digit that spawned loot, and a room a client can
+    // ask to create or delete entities is a room a client can ask to mint
+    // (issue #10). Kept for the same reason.
     DEBUG_REMOVE_ENTITIES,
     DEBUG_INCREASE_ENTITIES,
     DEBUG_DECREASE_ENTITIES,

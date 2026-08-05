@@ -97,6 +97,17 @@ player owns is on the chain, and the shop and the auction house still work
 normally. What it costs is loot, quest payouts, and equipping, all of which are
 refused rather than faked.
 
+The other half of that boundary is that a client cannot author the reward in the
+first place. It could: `PLAYER_HOTBAR_ACTIVATED` with digit 6 dropped a random
+catalogue item at the sender's feet, in every build, and a dropped item is what
+`pickupItem()` mints from — so switching the verifier on would have turned a
+hotbar key into an unmetered issuer faucet (issue #10). That branch is gone, and
+so are the four `DEBUG_*` handlers next to it and the keys that sent them. Loot
+on the ground is authored by a mob dying and by nothing else, the room refuses
+any message it does not handle rather than falling through the if-chain to
+nothing, and `npm run test:room` holds it there with a wallet bound and an
+authority that would mint if anything asked it to.
+
 When the binding exists, the same service pays out. It is written and tested
 against a `MockNode` already — `npm run test:inventory` binds a character with a
 stub verifier, mints a sword, lists it in the auction house and watches it stop
@@ -195,6 +206,8 @@ src/server/kei/Economy.test.ts  the rules, against a chain in-process
 src/server/kei/Inventory.test.ts the boundary: a SQLite row owns nothing, and a reward pays once
 src/server/kei/Market.test.ts   two players trading, with this server on neither leg
 src/server/kei/endtoend.test.ts the same things across a URL, the way a browser does it
+src/server/rooms/state/GameRoomState.ts       every message the room answers, and what none of them may cause
+src/server/rooms/state/GameRoomState.test.ts  a client message cannot spawn loot, and an unknown one is refused
 src/client/Controllers/Wallet.ts  the player's key, and the only thing that spends their gold
 src/client/Controllers/UI/Panels/Dialog/VendorDialog.ts  the shop, as a player sees it
 src/client/Controllers/UI/Panels/Panel_Auction.ts        the auction house, as a player sees it
@@ -204,7 +217,7 @@ src/client/Utils/index.ts       where the client looks for the server
 ## Tests
 
 ```sh
-npm run test            # test:startup, test:economy, test:market, test:inventory — all in-process
+npm run test            # test:startup, test:economy, test:market, test:inventory, test:room — all in-process
 npm run server-start &
 npm run test:e2e        # the same things over HTTP, sharing no memory with the server
 ```
