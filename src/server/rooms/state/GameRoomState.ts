@@ -25,6 +25,15 @@ import { describeLegacy, isEmptyLegacy, quarantineLegacy } from "../../kei/Legac
  * listed here is refused before the chain runs and the refusal is logged
  * (issue #10).
  */
+/**
+ * The only stats a point can be spent on. `statsCTRL`'s `this.stats` also
+ * carries `maxHealth` and `maxMana`, which are not spendable stats, and the
+ * key on an incoming PLAYER_ADD_STAT_POINT message is otherwise whatever
+ * string the client sent — an unrecognized key (including "__proto__",
+ * "constructor", "toString") is refused rather than passed through (issue #37).
+ */
+const SPENDABLE_STATS: ReadonlySet<string> = new Set(["strength", "agility", "endurance", "intelligence", "wisdom"]);
+
 const HANDLED: ReadonlySet<ServerMsg> = new Set([
     ServerMsg.PING,
     ServerMsg.PLAYER_RESSURECT,
@@ -270,11 +279,18 @@ export class GameRoomState extends Schema {
         if (type === ServerMsg.PLAYER_ADD_STAT_POINT) {
             let key = data.key;
             if (playerState.player_data.points > 0) {
-                // remove point
-                playerState.player_data.points -= 1;
+                if (SPENDABLE_STATS.has(key)) {
+                    // update controller
+                    playerState.statsCTRL.updateBaseStats(key, 1);
 
-                // update controller
-                playerState.statsCTRL.updateBaseStats(key, 1);
+                    // remove point, only once it was actually spent
+                    playerState.player_data.points -= 1;
+                } else {
+                    // An unknown key is refused, not spent — but the recompute
+                    // still runs, matching every other path through
+                    // updateBaseStats (issue #37).
+                    playerState.statsCTRL.updateStats();
+                }
             }
         }
 
