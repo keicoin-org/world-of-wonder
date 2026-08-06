@@ -312,7 +312,7 @@ const DEFAULTS = {
 export function toUnits(value: number | string | bigint): string | undefined {
   if (typeof value === 'bigint') return value >= ZERO && value <= MAX_UNITS ? value.toString() : undefined
   if (typeof value === 'number') {
-    if (!Number.isSafeInteger(value) || value < 0) return undefined
+    if (!Number.isSafeInteger(value) || value < 0 || value > Number(MAX_UNITS)) return undefined
     return value.toString()
   }
   if (typeof value !== 'string' || !/^\d{1,19}$/.test(value)) return undefined

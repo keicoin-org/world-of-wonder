@@ -149,6 +149,11 @@ check('nor is a negative', toUnits(-1) === undefined && toUnits(-1n) === undefin
 check('nor infinity or NaN', toUnits(Infinity) === undefined && toUnits(NaN) === undefined)
 check('nor a number too big to be exact', toUnits(2 ** 53) === undefined)
 check('nor a quantity past the currency cap', toUnits('9999999999') === undefined)
+check('nor a bigint past the currency cap', toUnits(9_999_999_999n) === undefined)
+// The number branch used to return before ever comparing against MAX_UNITS,
+// so this is the one case that actually caught issue #45: a plain number is
+// what every room caller passes, and it was the one shape with no ceiling.
+check('nor a number past the currency cap', toUnits(9_999_999_999) === undefined)
 check('nor anything that is not a number at all', toUnits('12x') === undefined && toUnits('') === undefined)
 
 ////////////////////////////////////////////////////////////////////////////////
