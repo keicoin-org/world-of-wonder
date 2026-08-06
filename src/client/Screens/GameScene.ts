@@ -76,6 +76,12 @@ export class GameScene {
             this._game.setScene(State.LOGIN);
         }
 
+        // A character that has never played owns what the chain says it owns,
+        // which is nothing, and the cheapest thing the vendor sells is a sword at
+        // 100 gold. This is the one mint a production player can reach; the server
+        // hands it out once and refuses every claim after (issue #24).
+        await this._game.claimStartingPurse();
+
         // performance
         scene.performancePriority = ScenePerformancePriority.Intermediate;
 

@@ -123,6 +123,22 @@ export class GameController {
         }
     }
 
+    /**
+     * Claim the starting purse for the character about to be played.
+     *
+     * Here rather than at character creation because this is the first moment
+     * both halves of it exist: a character this server has authenticated, and a
+     * wallet in this browser for the gold to go to. Asking every time the game
+     * scene opens is deliberate — the server refuses the second one, and a player
+     * whose first claim was lost to a closed tab or an unreachable node gets
+     * another go at it rather than a permanently empty purse (issue #24).
+     */
+    async claimStartingPurse() {
+        if (!this.wallet || !this._currentUser?.token || !this._currentCharacter?.id) return;
+        const granted = await this.wallet.claimStartingPurse(this._currentUser.token, this._currentCharacter.id);
+        if (granted > 0) console.log("[GAME] starting purse", granted);
+    }
+
     public getGameData(type, key) {
         let returnData;
         switch (type) {

@@ -165,7 +165,11 @@ class GameServer {
         // The player's wallet lives in their browser and signs its own blocks,
         // so it needs a node it can reach over HTTP. On a mock that is us.
         if (chain.mock) mountNodeRpc(app, chain.mock);
-        mountEconomyApi(app, this.economy);
+        mountEconomyApi(app, this.economy, {
+            owns: (token, characterId) => this.database.ownsCharacter(token, characterId),
+            granted: (address, characterId) => this.database.hasStartingPurse(address, characterId),
+            record: (entry) => this.database.recordStartingPurse(entry).then(() => undefined),
+        });
 
         // create colyseus server
         const gameServer = new Server({

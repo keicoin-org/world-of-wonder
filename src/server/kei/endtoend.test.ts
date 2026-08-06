@@ -201,5 +201,54 @@ if (granted.ok) {
   console.log('  ..    /kei/grant is not exposed; skipping the funded half')
 }
 
+// ------------------------------------------------------------ the first move
+//
+// Everything above is funded by `/kei/grant`, which is the development faucet and
+// answers 404 in production. So none of it says anything about how a real player
+// gets their first gold, and that gap is the whole of issue #24: the constant was
+// right in the file and unreachable in the only environment that matters.
+//
+// This section uses no faucet. It creates an account through the same route the
+// login screen does, claims the starting purse with the token that route returned,
+// and asks the chain. It is deliberately outside the block above so it runs even
+// where `/kei/grant` is closed — which is exactly where it needs to run.
+
+const account = (await (await fetch(`${BASE}/returnRandomUser`, { method: 'POST' })).json()).user
+check('an account and a character can be created over HTTP', typeof account?.token === 'string' && account?.id > 0, JSON.stringify(account?.name))
+
+const newcomer = await Kei.start({ node: `${BASE}/rpc`, seed: randomSeed() })
+const empty = await (await fetch(`${BASE}/kei/wallet/${newcomer.address}`)).json()
+check('a fresh character starts with nothing', empty.gold === 0)
+
+const unclaimed = await (
+  await fetch(`${BASE}/kei/purse?token=nonsense&character=${account.id}&address=${newcomer.address}`, { method: 'POST' })
+).json()
+check('a token nobody was issued claims nothing', unclaimed.granted === undefined, JSON.stringify(unclaimed))
+
+const claimed = await (
+  await fetch(`${BASE}/kei/purse?token=${account.token}&character=${account.id}&address=${newcomer.address}`, { method: 'POST' })
+).json()
+check('the character claims its starting purse', claimed.granted > 0, JSON.stringify(claimed))
+
+// A mint arrives as a block addressed to this wallet and is not its property
+// until this wallet signs for it (SPEC §5.6.3). That is what `Wallet.refresh()`
+// does in the browser after a claim, and skipping it here would be a test that
+// believed the server's answer instead of the chain's.
+const collected = await until(async () => {
+  await newcomer.sync()
+  return (await (await fetch(`${BASE}/kei/wallet/${newcomer.address}`)).json()).gold === claimed.granted
+})
+check('and the chain, not the server, says they have it', collected, `${(await (await fetch(`${BASE}/kei/wallet/${newcomer.address}`)).json()).gold}`)
+
+const affordable = await (
+  await fetch(`${BASE}/kei/order?address=${newcomer.address}&key=sword_01`, { method: 'POST' })
+).json()
+check('which is enough to order the cheapest thing the vendor sells', affordable.price === 100, JSON.stringify(affordable))
+
+const twice = await (
+  await fetch(`${BASE}/kei/purse?token=${account.token}&character=${account.id}&address=${newcomer.address}`, { method: 'POST' })
+).json()
+check('and it is claimed once', twice.granted === 0, JSON.stringify(twice))
+
 console.log(failures === 0 ? '\nall good\n' : `\n${failures} failed\n`)
 process.exit(failures === 0 ? 0 : 1)

@@ -136,6 +136,34 @@ data loses the wallet, which is the other half of owning it. The game never hold
 that key. That is why the vendor panel signs its own payments and reads the purse
 off the chain instead of trusting a number the room sent it.
 
+### The first five minutes are 500 gold, once
+
+A character that has never played owns what the chain says it owns, which is
+nothing, and the cheapest thing the vendor sells is a sword at 100 gold. So the
+first thing a new player does is claim a starting purse: `POST /kei/purse`, sent
+by the client when the game scene opens, worth `STARTING_GOLD` — a sword, two
+potions, and enough left over to make the auction house legible rather than
+theoretical.
+
+It is a mint the issuer signs, so what stops it being a faucet is worth stating.
+It is claimed with the login token the rest of the API already trusts, checked
+against the character being claimed for. It goes out once per address and once
+per character, recorded in `starting_purses`, which is the one gameplay table not
+dropped on restart. The row is written before the mint, so an interruption
+under-pays rather than over-mints.
+
+What it is **not** is proof of anything. This server still cannot check that a
+wallet belongs to the player holding it, so the destination is taken on the
+claimant's word — which costs an attacker their own endowment and nobody else's.
+Nor is it sybil-proof, because accounts are free: it is a starter kit with the
+bounds a starter kit has. `KEI_STARTING_GOLD=0` turns it off for a deployment
+that would rather every player earned their first gold.
+
+`/kei/grant`, which mints gold to any address on request, is a development
+convenience and answers 404 in production. It was for a while the *only* thing
+that read `STARTING_GOLD`, which meant the deployed game had no first move at all
+(issue #24).
+
 ### Selling takes one, and there is no route for it
 
 A sale is the player transferring the item to the shop, and the shop paying for
@@ -351,7 +379,8 @@ working directory, so start it from the project root:
 | `KEI_NODE` | A node URL, overriding the public one for `KEI_NETWORK`. Unset is the normal case. A custom node is treated as persistent and requires `KEI_GAME_SEED`, including when labelled `mock`. |
 | `KEI_EXCHANGE` | `off` disables paying Kei for gold. SPEC §8 requires the game to be playable with payments off. |
 | `KEI_ALLOWED_ORIGINS` | Comma-separated origins whose pages may call this server, e.g. `https://keicoin.org`. Same-origin is always allowed and needs no entry. Unset means the dev server outside production and nothing at all inside it. A malformed entry — `*`, a trailing slash, a path — is a startup error. |
-| `NODE_ENV` | `production` closes `/kei/grant`, never loads the Colyseus monitor, turns off the latency simulation, and stops `KEI_ALLOWED_ORIGINS` defaulting to the dev server. |
+| `KEI_STARTING_GOLD` | What a new character claims once from `/kei/purse`. Defaults to 500, which buys the sword and two potions. `0` hands out nothing. A value outside 0–10000, or one that is not a whole number, stops startup rather than being rounded into something nobody chose. |
+| `NODE_ENV` | `production` closes `/kei/grant` (the development faucet — `/kei/purse` is what a production player claims), never loads the Colyseus monitor, turns off the latency simulation, and stops `KEI_ALLOWED_ORIGINS` defaulting to the dev server. |
 | `DATABASE_PATH` | Where sqlite keeps accounts and characters. Defaults to `./database.db`. |
 | `DATABASE_HOST` `DATABASE_DB` `DATABASE_USER` `DATABASE_PASSWORD` | mysql, read only when `database` in `src/shared/Config.ts` is `"mysql"`. |
 | `GAME_SERVER` | Build-time, not runtime — see above. |
