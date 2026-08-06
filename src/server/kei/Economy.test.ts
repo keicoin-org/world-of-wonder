@@ -8,9 +8,14 @@
  */
 
 import { Kei } from 'kei-transaction'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
-import { issuanceCost, startEconomy, STARTING_GOLD } from './Economy'
+import { issuanceCost, startEconomy, STARTING_GOLD, type ShopDebt } from './Economy'
 import { ItemsDB } from '../data/ItemDB'
+import { Database } from '../Database'
+import { Config } from '../../shared/Config'
 
 const ISSUER_SEED = 'A'.repeat(64)
 const PLAYER_SEED = 'B'.repeat(64)
@@ -32,9 +37,38 @@ async function until(predicate: () => Promise<boolean>, ms = 5_000): Promise<boo
   return false
 }
 
+// A rejection nobody caught is the whole of issue #28's second half — an
+// unhandled rejection out of the detached listener `kei.on('asset-received', ...)`
+// registers is fatal on this Node version with nothing in `src/` to catch it.
+// Counted here rather than asserted against immediately, so every check below
+// that deliberately makes the chain fail can share one proof at the end that
+// none of those failures ever escaped as one.
+let unhandled = 0
+process.on('unhandledRejection', (reason) => {
+  unhandled += 1
+  console.log('  note  an unhandled rejection reached the process:', reason)
+})
+
+// A real, file-backed database — same as Outbox.test.ts — because the point
+// of the new `shop_debts` table is that it outlives this process. A row
+// written through `Economy.ts`'s `recordDebt` port has to still be there when
+// a *different* `Database` instance, pointed at the same file, reads it back.
+const directory = mkdtempSync(join(tmpdir(), 'wow-economy-'))
+process.env.DATABASE_PATH = join(directory, 'test.db')
+const database = new Database(new Config())
+await database.init()
+await database.create()
+// `createDatabase()` fires its statements without awaiting them individually.
+await new Promise((resolve) => setTimeout(resolve, 250))
+
 const node = await Kei.mock({})
 
-const economy = await startEconomy({ seed: ISSUER_SEED, node, network: 'mock' })
+const economy = await startEconomy({
+  seed: ISSUER_SEED,
+  node,
+  network: 'mock',
+  recordDebt: (debt) => database.recordShopDebt(debt),
+})
 const player = await Kei.start({ node, seed: PLAYER_SEED })
 
 // --------------------------------------------------------------- issue #24
@@ -234,11 +268,178 @@ for (const key of ['toString', '__proto__', 'constructor', 'not_a_real_item']) {
   check(`ordering "${key}" is refused like an unknown item, not priced free`, refusedPrototypeKey.includes('does not sell'), refusedPrototypeKey)
 }
 
+// --------------------------------------------------------------- issue #29
+//
+// A refund that cannot actually send must not tell a player it did. `refund`
+// used to resolve normally whether or not the transfer confirmed, and
+// `settleGold` set `order.state = 'refunded'` — the player-facing claim that
+// the gold came back — before it had even tried. Below, `gold.transfer` is
+// made to fail by rejecting the one block it would produce, and the same
+// order is watched through both outcomes: a mint failure whose refund still
+// works, and one whose refund also fails.
+//
+// There is no seam in `Economy.ts` for this — `gold` and `itemTokens` are
+// closed over, not exposed — so the failure is injected at the one place
+// every one of the shop's own transfers, mints, and burns actually has to
+// pass through: the mock node's `process`. Both economies in this file share
+// one `MockNode`, so this reaches the shop without reaching into it.
+const goldAsset = economy.catalogue().coin.asset
+
+/** Rejects the next block matching `matches`, until `restore()` is called. */
+function failWhile(matches: (block: any) => boolean, message: string): () => void {
+  const original = node.process.bind(node)
+  ;(node as any).process = async (block: any) => {
+    if (matches(block)) throw new Error(message)
+    return original(block)
+  }
+  return () => {
+    ;(node as any).process = original
+  }
+}
+
+const isSend = (asset: string, kind: 'mint' | 'transfer') => (block: any) =>
+  block?.type === 'asset' && block.op?.kind === kind && block.op?.asset === asset && block.account === economy.address
+
+const refundee = await Kei.start({ node, seed: 'F'.repeat(64) })
+await economy.grant(refundee.address, 4_000)
+await refundee.sync()
+const refundeePurse = await refundee.token.get(goldAsset)
+const helm = economy.catalogue().items.find((item) => item.key === 'helm_01')!
+
+// Case A: the item cannot be minted, but the refund still can. This is the
+// path that already worked before this fix, and it must keep working exactly
+// the same way — `refund-failed` must never appear when a refund succeeds.
+const orderA = await economy.order(refundee.address, 'helm_01')
+const stopFailingMintA = failWhile(isSend(helm.asset, 'mint'), 'simulated mint failure')
+await refundeePurse.transfer(orderA.to, orderA.price)
+const refundedA = await until(async () => economy.orderStatus(orderA.id)?.state !== 'open')
+stopFailingMintA()
+check('a mint failure with a working refund still resolves', refundedA, economy.orderStatus(orderA.id)?.state)
+check('and reports refunded, not refund-failed', economy.orderStatus(orderA.id)?.state === 'refunded')
+check(
+  "and the reason a player reads still says the gold came back",
+  (economy.orderStatus(orderA.id)?.reason ?? '').includes('has been returned'),
+  economy.orderStatus(orderA.id)?.reason,
+)
+check('a refund that succeeds is not written down as a debt', (await database.shopDebtsFor(refundee.address)).length === 0)
+
+// Case B: the item cannot be minted, and the refund cannot send either. This
+// is the lie issue #29 is about — before the fix, this order would still have
+// read 'refunded' with "your gold has been returned" while the gold sat with
+// the shop.
+const orderB = await economy.order(refundee.address, 'helm_01')
+const stopFailingB = failWhile(
+  (block) => isSend(helm.asset, 'mint')(block) || isSend(goldAsset, 'transfer')(block),
+  'simulated mint and refund failure',
+)
+await refundeePurse.transfer(orderB.to, orderB.price)
+const settledB = await until(async () => economy.orderStatus(orderB.id)?.state !== 'open')
+stopFailingB()
+check('a mint and refund failure still resolves the order rather than hanging it open', settledB, economy.orderStatus(orderB.id)?.state)
+check('and reports refund-failed rather than the old lie of "refunded"', economy.orderStatus(orderB.id)?.state === 'refund-failed')
+check(
+  'the reason never claims the gold came back',
+  !(economy.orderStatus(orderB.id)?.reason ?? '').includes('has been returned'),
+  economy.orderStatus(orderB.id)?.reason,
+)
+check(
+  'and says the shop still owes it, naming the order',
+  (economy.orderStatus(orderB.id)?.reason ?? '').includes('still owes') && (economy.orderStatus(orderB.id)?.reason ?? '').includes(orderB.id),
+  economy.orderStatus(orderB.id)?.reason,
+)
+await refundee.sync()
+check(
+  "the player's gold really is still with the shop, matching what was written down",
+  (await refundeePurse.balance()) === 4_000 - orderB.price,
+  `${await refundeePurse.balance()}`,
+)
+
+const debtsB = await database.shopDebtsFor(refundee.address)
+check('the failed refund left exactly one durable debt', debtsB.length === 1, JSON.stringify(debtsB))
+check('naming the right amount', debtsB[0]?.amount === orderB.price, `${debtsB[0]?.amount} vs ${orderB.price}`)
+check('and an order id a player could quote for support', (debtsB[0]?.reason ?? '').includes(orderB.id))
+
+// `orders`' own TTL (`ORDER_TTL_MS`) forgets the order 120 seconds after it was
+// placed, and a restart forgets every order immediately — but the debt above
+// was never stored in `orders`, so neither erases it. What proves that below is
+// a *different* `Database` instance reading the same file back, the same proof
+// `Outbox.test.ts` uses for its own durable tables, folded into the restart
+// check this file already does further down (`restartedDatabase`).
+
+// --------------------------------------------------------------- issue #28
+//
+// The buyback path used to be a detached `void (async () => {...})()` with no
+// `.catch` — a rejection from `gold.mint` or an item's `transfer` was, on this
+// Node version, an unhandled rejection with nothing in `src/` catching it,
+// which is fatal. Below, both failure branches are forced and the process is
+// watched (via the `unhandledRejection` counter installed at the top of this
+// file) rather than trusted to still be here by assumption.
+const seller = await Kei.start({ node, seed: 'C'.repeat(64) })
+const hat = economy.catalogue().items.find((item) => item.key === 'hat_01')!
+const sellerPurse = await seller.token.get(goldAsset)
+await economy.grant(seller.address, hat.value)
+await seller.sync()
+const hatOrder = await economy.order(seller.address, 'hat_01')
+await sellerPurse.transfer(hatOrder.to, hatOrder.price)
+await until(async () => (await economy.inventoryOf(seller.address))['hat_01'] === 1)
+
+// Sell it back while the shop's payout mint is made to fail. The hat has
+// already left the seller's wallet the moment it arrives — that is what an
+// arrival is — so a failed payout here is a debt, not a no-op. The patch
+// stays live until the debt itself shows up: the item leaves the seller as
+// soon as the transfer lands, well before the shop even attempts the mint, so
+// gating on inventory instead would race ahead of the failure this is trying
+// to force.
+const beforeSale = await sellerPurse.balance()
+const stopFailingBuyback = failWhile(isSend(goldAsset, 'mint'), 'simulated buyback payout failure')
+await seller.items.transfer(hat.asset, economy.address)
+const buybackDebt = await until(async () => (await database.shopDebtsFor(seller.address)).some((debt) => debt.kind === 'gold'))
+stopFailingBuyback()
+check('a failed buyback payout is written down rather than lost', buybackDebt)
+check('the hat left the seller even though the payout failed', ((await economy.inventoryOf(seller.address))['hat_01'] ?? 0) === 0)
+const buybackDebts = (await database.shopDebtsFor(seller.address)).filter((debt) => debt.kind === 'gold')
+check('naming the gold owed', buybackDebts[0]?.amount === hat.buyback, `${buybackDebts[0]?.amount} vs ${hat.buyback}`)
+check('and naming the item and quantity in the reason', (buybackDebts[0]?.reason ?? '').includes('hat_01') || (buybackDebts[0]?.reason ?? '').includes(hat.title))
+await seller.sync()
+check("the seller was never paid for it — the debt matches reality, not a guess", (await sellerPurse.balance()) === beforeSale)
+
+// A non-sellable item's return failing is a silent confiscation today if it
+// is not caught the same way. Nothing in `ItemsDB` is non-sellable right now,
+// so `sellable` is flipped off for one item just for this check and restored
+// immediately after — the shop's refusal branch is real code with no other
+// way to reach it.
+const held = economy.catalogue().items.find((item) => item.key === 'armor_01')!
+await economy.deliver(seller.address, 'armor_01', 1)
+;(ItemsDB.armor_01 as any).sellable = false
+const stopFailingReturn = failWhile(isSend(held.asset, 'transfer'), 'simulated held-item return failure')
+await seller.items.transfer(held.asset, economy.address)
+const heldDebt = await until(async () => (await database.shopDebtsFor(seller.address)).some((debt) => debt.kind === 'item' && debt.key === 'armor_01'))
+stopFailingReturn()
+;(ItemsDB.armor_01 as any).sellable = true
+check('a refused item the shop could not return is held-and-owed, not silently dropped', heldDebt)
+check('and it still leaves the seller even though the shop could not hand it back', ((await economy.inventoryOf(seller.address))['armor_01'] ?? 0) === 0)
+const itemDebts = (await database.shopDebtsFor(seller.address)).filter((debt) => debt.kind === 'item')
+check('naming the payer, the item and the quantity', itemDebts[0]?.address === seller.address && itemDebts[0]?.key === 'armor_01' && itemDebts[0]?.amount === 1)
+
+// Nothing above was allowed to take the process with it, and an unrelated
+// order placed afterwards proves the shop is still doing its job rather than
+// merely still being reachable.
+const bystander = await Kei.start({ node, seed: 'D'.repeat(64) })
+await economy.grant(bystander.address, STARTING_GOLD)
+await bystander.sync()
+const bystanderPurse = await bystander.token.get(goldAsset)
+const bystanderOrder = await economy.order(bystander.address, 'sword_01')
+await bystanderPurse.transfer(bystanderOrder.to, bystanderOrder.price)
+const bystanderServed = await until(async () => (await economy.inventoryOf(bystander.address))['sword_01'] === 1)
+check('an unrelated order still settles normally after every failure above', bystanderServed)
+
+check('none of the induced failures above ever escaped as an unhandled rejection', unhandled === 0, `${unhandled}`)
+
 // A server lifetime ends while its ledger does not. Reopening the same economy
 // with the stable issuer must recognize exactly the same asset family.
 const firstLifetime = economy.catalogue()
 economy.close()
-const restarted = await startEconomy({ seed: ISSUER_SEED, node, network: 'mock' })
+const restarted = await startEconomy({ seed: ISSUER_SEED, node, network: 'mock', recordDebt: (debt) => database.recordShopDebt(debt) })
 const secondLifetime = restarted.catalogue()
 const firstSword = firstLifetime.items.find((item) => item.key === 'sword_01')!
 const secondSword = secondLifetime.items.find((item) => item.key === 'sword_01')!
@@ -246,5 +447,24 @@ check('issuer is stable across economy lifetimes', secondLifetime.issuer === fir
 check('gold asset is stable across economy lifetimes', secondLifetime.coin.asset === firstLifetime.coin.asset)
 check('item asset is stable across economy lifetimes', secondSword.asset === firstSword.asset)
 restarted.close()
+
+// The debts from issues #28 and #29 above were written before this restart —
+// long before `ORDER_TTL_MS` would have forgotten the orders they came from,
+// and now on the far side of the same "close one economy, open another" this
+// file already treats as its restart test. A *different* `Database`, opened
+// fresh against the same file rather than the same in-process instance that
+// wrote them, is what makes this a restart proof rather than a rerun of the
+// same object's own cache.
+const restartedDatabase = new Database(new Config())
+await restartedDatabase.init()
+const survivedRefund = await restartedDatabase.shopDebtsFor(refundee.address)
+const survivedBuyback = await restartedDatabase.shopDebtsFor(seller.address)
+check('the refund debt survives a restart, naming the amount owed', survivedRefund.some((debt) => debt.kind === 'gold' && debt.amount === orderB.price))
+check('the buyback debt survives a restart, naming the amount owed', survivedBuyback.some((debt) => debt.kind === 'gold' && debt.amount === hat.buyback))
+check(
+  'and the held item survives a restart, naming the item and quantity',
+  survivedBuyback.some((debt) => debt.kind === 'item' && debt.key === 'armor_01' && debt.amount === 1),
+)
+
 console.log(failures === 0 ? '\nall good\n' : `\n${failures} failed\n`)
 process.exit(failures === 0 ? 0 : 1)

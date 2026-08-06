@@ -133,6 +133,40 @@ export interface EconomyOptions {
   exchange?: boolean
   /** Told when a purchase settles, so the room can put the item in the bag. */
   onDelivered?: (delivery: { to: string; key: string; qty: number }) => void
+  /**
+   * Where an owed refund or a held-and-owed item goes when the chain will not
+   * take it back — a failed `refund` (issue #29), a failed buyback mint, or a
+   * failed return of an item this shop declined to buy (issue #28).
+   *
+   * A port, the same shape as `onDelivered`: this file holds the issuer's seed
+   * and should not also know how the game stores durable records, so it is
+   * handed a place to write one rather than a `Database` import. `undefined`
+   * is accepted so the economy still starts without one, but it only logs the
+   * debt then — a deployment that wants the debt to survive a restart wires
+   * this up, the same way `index.ts` wires `Database.recordShopDebt`.
+   */
+  recordDebt?: (debt: ShopDebt) => Promise<void>
+}
+
+/**
+ * One thing this shop owes and did not pay: gold it could not send back or
+ * mint out, or an item it took but could not return.
+ *
+ * `reason` is written to be shown to a player or a support agent as-is, the
+ * same rule `Order.reason` and every `refund` message already follow — it
+ * names the amount and, where one exists, the order it came from, and never a
+ * secret.
+ */
+export interface ShopDebt {
+  /** Who the shop owes. */
+  address: string
+  /** Gold, or one of `ItemsDB`'s archetypes. */
+  kind: 'gold' | 'item'
+  /** The item key. Absent for a gold debt. */
+  key?: string
+  /** Gold owed, or how many units of `key` are being held. */
+  amount: number
+  reason: string
 }
 
 export interface CataloguePayload {
@@ -152,10 +186,19 @@ export interface CataloguePayload {
 }
 
 /**
- * Where an order got to. There are only three answers, and two of them are
- * final: the item was minted, or the gold went back.
+ * Where an order got to. There are only four answers now, and three of them
+ * are final: the item was minted, the gold went back, or the gold could not
+ * be sent back and the shop still owes it.
+ *
+ * `'refund-failed'` exists because `'refunded'` used to be the only failure
+ * exit, and it lies: it is what `settleGold` wrote *before* `refund` had even
+ * been tried, on the assumption that returning gold cannot itself fail. It
+ * can, and when it does the player's gold is still sitting with the shop —
+ * which is exactly the debt `refund-failed` and `EconomyOptions.recordDebt`
+ * exist to say out loud instead of hiding behind a claim that never happened
+ * (issue #29).
  */
-export type OrderState = 'open' | 'delivered' | 'refunded'
+export type OrderState = 'open' | 'delivered' | 'refunded' | 'refund-failed'
 
 /** What the client is handed when the shop takes an order. */
 export interface OrderTicket {
@@ -359,6 +402,28 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
   }
 
   /**
+   * Write down what the shop owes and could not pay.
+   *
+   * `orders` is an in-memory map with a 120s TTL, and it was, before this, the
+   * only place a failed refund was written down at all — so the debt evaporated
+   * from view long before anyone could act on it, and did not survive a
+   * restart either. This is the durable side of that: `EconomyOptions.recordDebt`
+   * is asked to hold what a log line cannot.
+   *
+   * Falls back to a log line when no store was wired in, so a deployment that
+   * forgot to pass one still runs — but a debt that only ever reaches this
+   * fallback is one this file warned about and could not otherwise keep.
+   */
+  const recordDebt =
+    options.recordDebt ??
+    (async (debt: ShopDebt): Promise<void> => {
+      Logger.error(
+        `[kei][debt] no durable store was wired into this economy, so this can only be logged: ${debt.address} is owed ` +
+          `${debt.amount} ${debt.kind === 'gold' ? 'gold' : `× ${debt.key ?? '?'}`} (${debt.reason})`,
+      )
+    })
+
+  /**
    * Gold that bought nothing goes back.
    *
    * There is no third option. The shop cannot ask what a transfer was for after
@@ -366,14 +431,22 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
    * only honest answers are "deliver" and "return" — and before this existed the
    * answer to a mismatch was "keep it", which cost a player 990 gold in the
    * report that found it.
+   *
+   * Resolves to whether the transfer actually confirmed. It used to resolve
+   * normally either way, logging a failure but never saying so to its caller —
+   * which is how `settleGold` came to tell a player their gold had come back
+   * before it had any idea whether that was true (issue #29). A caller cannot
+   * report the truth about something this function will not say.
    */
-  const refund = async (address: string, amount: number, why: string): Promise<void> => {
+  const refund = async (address: string, amount: number, why: string): Promise<boolean> => {
     try {
       await gold.transfer(address, amount)
+      return true
     } catch (error) {
       // Worth saying loudly: an unreturned refund is indistinguishable from the
       // shop having simply pocketed the difference.
       Logger.error(`[kei][refund] ${amount} gold owed back to ${address} (${why}): ${(error as Error).message}`)
+      return false
     }
   }
 
@@ -393,11 +466,17 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
       .sort((a, b) => a.at - b.at)
 
     if (waiting.length === 0) {
-      await refund(
-        from,
-        amount,
-        'no open order at that price',
-      )
+      const ok = await refund(from, amount, 'no open order at that price')
+      if (!ok) {
+        // Nothing was claimed against, so there is no order to mark — but the
+        // gold is exactly as unaccounted for as if there had been one.
+        await recordDebt({
+          address: from,
+          kind: 'gold',
+          amount,
+          reason: `${amount} gold arrived matching no open order and could not be sent back to ${from}.`,
+        })
+      }
       return
     }
 
@@ -410,13 +489,26 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
     const order = waiting[0]!
     const contested = waiting.some((other) => other.key !== order.key || other.qty !== order.qty)
     if (contested) {
-      const why =
-        'Two different orders were waiting on a payment of exactly this much, so the shop could not tell which one your gold was for. It has been sent back — order one thing at a time.'
+      const ids = waiting.map((tied) => tied.id).join(', ')
+      const ok = await refund(from, amount, 'more than one order matched, delivering different items')
+      // The debt is written before either order is told about the outcome, so a
+      // read of either order's status can never land between "refund failed"
+      // and "the shop wrote that down" (issues #28/#29).
+      if (!ok) {
+        await recordDebt({
+          address: from,
+          kind: 'gold',
+          amount,
+          reason: `An ambiguous payment of ${amount} gold across orders ${ids} could not be sent back to ${from}.`,
+        })
+      }
+      const why = ok
+        ? 'Two different orders were waiting on a payment of exactly this much, so the shop could not tell which one your gold was for. It has been sent back — order one thing at a time.'
+        : `Two different orders were waiting on a payment of exactly this much, so the shop could not tell which one your gold was for. It tried to send the ${amount} gold back and could not — the shop still owes it. Quote this order id if you ask for it.`
       for (const tied of waiting) {
-        tied.state = 'refunded'
+        tied.state = ok ? 'refunded' : 'refund-failed'
         tied.reason = why
       }
-      await refund(from, amount, 'more than one order matched, delivering different items')
       return
     }
 
@@ -426,25 +518,113 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
 
     const token = itemTokens.get(order.key)
     if (!token) {
-      order.state = 'refunded'
-      order.reason = `This world no longer issues ${order.key}, so your gold has been returned.`
-      await refund(from, amount, `no issuer token for ${order.key}`)
+      const ok = await refund(from, amount, `no issuer token for ${order.key}`)
+      if (!ok) {
+        await recordDebt({
+          address: from,
+          kind: 'gold',
+          amount,
+          reason: `Order ${order.id} paid for ${order.key}, which this world no longer issues, and the ${amount}-gold refund failed. The shop still owes it.`,
+        })
+      }
+      order.state = ok ? 'refunded' : 'refund-failed'
+      order.reason = ok
+        ? `This world no longer issues ${order.key}, so your gold has been returned.`
+        : `This world no longer issues ${order.key}. The shop tried to return your gold and could not — it still owes you ${amount} gold for order ${order.id}.`
       return
     }
 
     try {
       await token.mint(from, order.qty)
     } catch (error) {
-      order.state = 'refunded'
-      order.reason = 'The shop could not hand the item over, so your gold has been returned.'
-      await refund(from, amount, `minting ${order.qty} ${order.key} failed: ${(error as Error).message}`)
+      const ok = await refund(from, amount, `minting ${order.qty} ${order.key} failed: ${(error as Error).message}`)
+      if (!ok) {
+        await recordDebt({
+          address: from,
+          kind: 'gold',
+          amount,
+          reason: `Order ${order.id} for ${order.qty} × ${order.key} could not be delivered and the ${amount}-gold refund failed too. The shop still owes it.`,
+        })
+      }
+      order.state = ok ? 'refunded' : 'refund-failed'
+      order.reason = ok
+        ? 'The shop could not hand the item over, so your gold has been returned.'
+        : `The shop could not hand the item over, and it could not return your gold either — it still owes you ${amount} gold for order ${order.id}.`
       return
     }
 
-    // The shop is a sink: gold spent here stops existing, which frees the
-    // headroom it took under the cap (SPEC §5.6.6).
-    await gold.burn(order.price)
+    try {
+      // The shop is a sink: gold spent here stops existing, which frees the
+      // headroom it took under the cap (SPEC §5.6.6).
+      await gold.burn(order.price)
+    } catch (error) {
+      // The item already minted to the player — that succeeded, and nothing
+      // here may roll it back or reclassify it as a failed delivery. A burn
+      // that fails to fire afterwards is the shop's own bookkeeping falling
+      // behind, not a debt to the player, so it is loud in the log and nowhere
+      // else (issue #28, item 3).
+      Logger.error(
+        `[kei][settleGold] burning ${order.price} gold for order ${order.id} failed after ${order.key} was already delivered: ${(error as Error).message}`,
+      )
+    }
     options.onDelivered?.({ to: from, key: order.key, qty: order.qty })
+  }
+
+  /**
+   * A sale, or a refusal handed back — the item-arrival half of settlement.
+   *
+   * Both branches move something *after* the item has already left the
+   * seller's wallet: an arrival is one-way, so by the time either `transfer`
+   * or `mint` below is even attempted, the shop is already holding an item it
+   * has neither paid for nor returned. A failure here is therefore never
+   * "nothing happened" — it is always "the shop now owes something" — which is
+   * why both branches record a debt on failure rather than only logging one
+   * (issue #28, items 2 and 4).
+   *
+   * This used to be a detached `void (async () => {...})()` with no `.catch`,
+   * so a rejection from either `transfer` or `mint` — a node mid-restart is
+   * enough — was an unhandled rejection, which Node treats as fatal with
+   * nothing in `src/` catching it. That took every room and every connected
+   * player down over one failed sale. Catching per-branch here, and again
+   * where this is called below, is belt and suspenders on purpose: the debt
+   * this function writes needs the specific item and quantity that only it
+   * still has in scope by the time something goes wrong.
+   */
+  const settleItem = async (from: string, key: string, rawAmount: number): Promise<void> => {
+    const data = ItemsDB[key] as ItemData
+    const qty = Math.floor(rawAmount)
+    if (qty < 1) return
+
+    // Refusing to buy something cannot mean keeping it. The shop has no claim
+    // on an item it would not pay for, so it goes straight back.
+    if (!data.sellable) {
+      try {
+        await itemTokens.get(key)!.transfer(from, qty)
+      } catch (error) {
+        Logger.error(`[kei][settleItem] returning ${qty} × ${key} to ${from} failed: ${(error as Error).message}`)
+        await recordDebt({
+          address: from,
+          kind: 'item',
+          key,
+          amount: qty,
+          reason: `The shop does not buy ${data.title ?? key} and tried to send back ${qty} of it, but the return failed. The shop is still holding it.`,
+        })
+      }
+      return
+    }
+
+    const payout = buybackPrice(data.value ?? 0) * qty
+    try {
+      await gold.mint(from, payout)
+    } catch (error) {
+      Logger.error(`[kei][settleItem] paying ${payout} gold to ${from} for ${qty} × ${key} failed: ${(error as Error).message}`)
+      await recordDebt({
+        address: from,
+        kind: 'gold',
+        amount: payout,
+        reason: `The shop took ${qty} × ${data.title ?? key} but could not pay out ${payout} gold for it. The shop still owes this.`,
+      })
+    }
   }
 
   /**
@@ -458,6 +638,14 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
    *
    * An item arriving is a sale, and needs no order at all: the asset says which
    * item it is, and its being here says whose it was.
+   *
+   * Both `settleGold` and `settleItem` already catch every failure they know
+   * how to name and turn it into a debt rather than a throw. The `.catch` here
+   * is the outer net for anything that still escapes them — `recordDebt`
+   * itself rejecting, most plausibly — so that this handler, which `kei-transaction`
+   * calls with nothing downstream of it to catch a rejection, can never be the
+   * thing that turns one failed settlement into every disconnected player
+   * (issue #28, item 1).
    */
   const stopSettling = kei.on('asset-received', (arrival) => {
     // Somebody who has traded with the shop is somebody whose chain may carry a
@@ -466,27 +654,18 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
     hall.watch(arrival.from)
 
     if (arrival.asset === gold.id) {
-      void settleGold(arrival.from, arrival.amount)
+      settleGold(arrival.from, arrival.amount).catch((error) => {
+        Logger.error(`[kei][settleGold] settling ${arrival.amount} gold from ${arrival.from} failed: ${(error as Error).message}`)
+      })
       return
     }
 
     const key = itemKeys.get(arrival.asset)
     if (key === undefined) return
 
-    void (async () => {
-      const data = ItemsDB[key] as ItemData
-      const qty = Math.floor(arrival.amount)
-      if (qty < 1) return
-
-      // Refusing to buy something cannot mean keeping it. The shop has no claim
-      // on an item it would not pay for, so it goes straight back.
-      if (!data.sellable) {
-        await itemTokens.get(key)!.transfer(arrival.from, qty)
-        return
-      }
-
-      await gold.mint(arrival.from, buybackPrice(data.value ?? 0) * qty)
-    })()
+    settleItem(arrival.from, key, arrival.amount).catch((error) => {
+      Logger.error(`[kei][settleItem] settling ${arrival.amount} × ${key} from ${arrival.from} failed: ${(error as Error).message}`)
+    })
   })
 
   /** Which token pays a reward leg. Gold is the currency; anything else is an archetype. */
