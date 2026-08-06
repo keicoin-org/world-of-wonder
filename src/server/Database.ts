@@ -351,6 +351,47 @@ class Database {
     }
 
     ///////////////////////////////////////
+    ////////////// SHOP DEBTS //////////////
+    ///////////////////////////////////////
+    //
+    // What kei/Economy.ts owes and could not pay: a refund that would not send
+    // (issue #29), or a buyback payout or a refused item's return that failed
+    // after the item had already left the seller's wallet (issue #28). Written
+    // through the `recordDebt` port on `EconomyOptions`, at the moment the
+    // chain operation actually failed — `orders` is an in-memory map with a
+    // 120-second TTL, so without this table the debt would outlive neither
+    // that window nor a restart, and would exist only as a log line.
+    //
+    // This is a ledger, not a queue. Nothing here is retried automatically —
+    // that is out of scope for what these two issues ask for — and nothing
+    // here authorizes a payout on its own; the chain is still the only ledger.
+    // What it guarantees is narrower and is the whole of the fix: the debt is
+    // written down somewhere a person can find it, instead of surviving only
+    // in a log line or an order a restart forgets.
+
+    /** Written the moment a refund, buyback payout, or item return fails — never only logged. */
+    async recordShopDebt(entry: { address: string; kind: "gold" | "item"; key?: string; amount: number; reason: string }): Promise<void> {
+        const sql = "INSERT INTO shop_debts (`address`, `kind`, `key`, `amount`, `reason`, `created_at`) VALUES (?,?,?,?,?,?)";
+        await this.querier.run(sql, [entry.address, entry.kind, entry.key ?? null, entry.amount, entry.reason, Date.now()] as any);
+    }
+
+    /** Every debt this shop owes one address, oldest first — for a person to read and settle by hand. */
+    async shopDebtsFor(
+        address: string
+    ): Promise<Array<{ id: number; address: string; kind: "gold" | "item"; key: string | null; amount: number; reason: string; createdAt: number }>> {
+        const rows = await this.querier.all("SELECT * FROM shop_debts WHERE address=? ORDER BY created_at ASC;", [address]);
+        return (rows ?? []).map((row: any) => ({
+            id: Number(row.id),
+            address: row.address,
+            kind: row.kind,
+            key: row.key ?? null,
+            amount: Number(row.amount),
+            reason: row.reason ?? "",
+            createdAt: Number(row.created_at ?? 0),
+        }));
+    }
+
+    ///////////////////////////////////////
     /////////// REWARD OUTBOX /////////////
     ///////////////////////////////////////
     //

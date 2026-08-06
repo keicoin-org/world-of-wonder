@@ -63,6 +63,12 @@ class GameServer {
             network: chain.network,
             // SPEC §8: the game must be playable with payments switched off.
             exchange: process.env.KEI_EXCHANGE !== "off",
+            // A failed refund or buyback payout has already taken the player's
+            // gold or item by the time it fails, so it is written down rather
+            // than only logged (issues #28/#29) — the same `shop_debts` table
+            // `Database.ts` describes next to `starting_purses` and
+            // `reward_payments`.
+            recordDebt: (debt) => this.database.recordShopDebt(debt),
         });
 
         // The room's half of the economy: the one place gameplay is allowed to

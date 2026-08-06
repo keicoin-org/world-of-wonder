@@ -222,3 +222,33 @@ CREATE TABLE IF NOT EXISTS `reward_outbox_legs` (
 	`error`			varchar(255),
 	PRIMARY KEY (`reward_id`, `leg`)
 );
+
+--
+-- SHOP DEBTS
+--
+-- What the shop owes and has not paid: a refund `kei/Economy.ts` could not
+-- send back (issue #29), or a buyback payout or a refused item's return that
+-- failed after the item had already left the seller's wallet (issue #28).
+--
+-- Not a queue and not a balance. Nothing here is retried automatically and
+-- nothing here authorizes a payout -- the chain is still the only ledger,
+-- this is only where a person would look to find out what it still owes. A
+-- row is written at the moment the shop already knows it failed, which is
+-- also the moment `orders`' 120-second TTL (ORDER_TTL_MS) or a restart would
+-- otherwise have let the debt evaporate from view without a trace.
+--
+-- kind is 'gold' or 'item', key names which item for the latter and is unused
+-- for the former. reason is free text written to be shown to a player or a
+-- support agent as-is, the same rule every other player-facing message in
+-- Economy.ts already follows.
+
+CREATE TABLE IF NOT EXISTS `shop_debts` (
+	`id`			int(10) NOT NULL AUTO_INCREMENT,
+	`address`		varchar(255) NOT NULL,
+	`kind`			varchar(8) NOT NULL,
+	`key`			varchar(255),
+	`amount`		int(10) NOT NULL,
+	`reason`		varchar(500),
+	`created_at`	bigint,
+	PRIMARY KEY (`id`)
+);
