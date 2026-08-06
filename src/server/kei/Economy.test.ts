@@ -251,6 +251,23 @@ check('with a reason a player can read', (economy.orderStatus(twoPotions.id)?.re
 // An id nobody was given is an id about which there is nothing to say.
 check('an invented order id reads as nothing', economy.orderStatus('f'.repeat(48)) === undefined)
 
+// --------------------------------------------------------------- issue #37
+//
+// `ItemsDB` is a plain object literal, so `ItemsDB['toString']` and
+// `ItemsDB['__proto__']` are both truthy without naming a real item — a bare
+// `if (!data)` treats either as a catalogue hit, priced at `undefined ?? 0`,
+// which is a free item. `order()` has to refuse a key it does not own the
+// same way it refuses one that is merely absent.
+for (const key of ['toString', '__proto__', 'constructor', 'not_a_real_item']) {
+  let refusedPrototypeKey = ''
+  try {
+    await economy.order(shopper.address, key)
+  } catch (error) {
+    refusedPrototypeKey = (error as Error).message
+  }
+  check(`ordering "${key}" is refused like an unknown item, not priced free`, refusedPrototypeKey.includes('does not sell'), refusedPrototypeKey)
+}
+
 // --------------------------------------------------------------- issue #29
 //
 // A refund that cannot actually send must not tell a player it did. `refund`

@@ -23,9 +23,13 @@ export class GameRoom extends Room<GameRoomState> {
     //////////////////////////////////////////////////////////////////////////
     // on create room event
     async onCreate(options: any) {
-        Logger.info("[gameroom][onCreate] game room created: " + this.roomId, options);
+        Logger.info("[gameroom][onCreate] game room created: " + this.roomId + " at " + options.location);
 
-        this.setMetadata(options);
+        // Room metadata is served by the unauthenticated matchmaking endpoint
+        // (getAvailableRooms / GET /matchmake/game_room), so only publish what
+        // clients actually need to find a room by location. Never include the
+        // caller's session token or other account-identifying options here.
+        this.setMetadata({ location: options.location });
 
         this.config = new Config();
 
@@ -76,7 +80,7 @@ export class GameRoom extends Room<GameRoomState> {
     // authorize client based on provided options before WebSocket handshake is complete
     async onAuth(client: Client, authData: any, request: http.IncomingMessage) {
         let character = await Auth.check(this.database, authData);
-        console.log("[onAuth]", authData);
+        Logger.info("[gameroom][onAuth] character " + authData.character_id + " authenticated.");
         return character;
     }
 

@@ -165,5 +165,41 @@ check(
 check("to the character that walked into it", minted[0]?.characterId === CHARACTER);
 check("and the drop is off the ground", loot().length === 0);
 
+////////////////////////////////////////////////////////////////////////////////
+// A stat point is spent on a real stat or not spent at all. `statsCTRL`'s
+// `this.stats` is a plain object literal, so "__proto__" used to resolve to
+// Object.prototype and "constructor"/"toString" to Function.prototype — all
+// three truthy, all three writable — and spending a point on one polluted
+// that prototype for the entire process, breaking every character save that
+// followed (issue #37).
+
+player.player_data.points = 5;
+const pointsBefore = player.player_data.points;
+const strengthBefore = player.player_data.strength;
+
+for (const key of ["__proto__", "constructor", "toString"]) {
+    state.processMessage(client, ServerMsg.PLAYER_ADD_STAT_POINT, { key });
+}
+check(
+    "__proto__/constructor/toString do not pollute a shared prototype",
+    !Object.prototype.hasOwnProperty.call(Object.prototype, "baseValue") &&
+        !Object.prototype.hasOwnProperty.call(Function.prototype, "baseValue")
+);
+check("and none of them cost a point", player.player_data.points === pointsBefore, `${player.player_data.points}`);
+check("nor touched a real stat", player.player_data.strength === strengthBefore, `${player.player_data.strength}`);
+
+// A key that names something real on statsCTRL but is not a spendable stat —
+// "ac" has no "+" button in the UI at all — is refused the same as a made-up
+// one, and neither costs a point.
+for (const key of ["nonsense", "ac"]) {
+    state.processMessage(client, ServerMsg.PLAYER_ADD_STAT_POINT, { key });
+}
+check("an unrecognized or unspendable key is refused without spending the point", player.player_data.points === pointsBefore, `${player.player_data.points}`);
+
+// A real, spendable key still works, and still costs a point.
+state.processMessage(client, ServerMsg.PLAYER_ADD_STAT_POINT, { key: "strength" });
+check("a legitimate key still adds to the stat", player.player_data.strength === strengthBefore + 1, `${player.player_data.strength}`);
+check("and still costs a point", player.player_data.points === pointsBefore - 1, `${player.player_data.points}`);
+
 console.log(failures === 0 ? "\nall good\n" : `\n${failures} failed\n`);
 process.exit(failures === 0 ? 0 : 1);

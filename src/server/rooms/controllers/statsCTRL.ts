@@ -119,7 +119,7 @@ export class statsCTRL {
     }
 
     updateBaseStats(key, value): void {
-        if (this.stats[key]) {
+        if (Object.prototype.hasOwnProperty.call(this.stats, key)) {
             this.stats[key].baseValue += value;
         }
         this.updateStats();

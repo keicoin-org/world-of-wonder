@@ -13,6 +13,18 @@ class Auth {
             return false;
         }
 
+        // `authData.token` used to be sent by every client and read by none: the
+        // only gate on a join was "does this character id exist", and ids are
+        // small sequential integers readable unauthenticated via GET
+        // /get_character. `ownsCharacter` is the same token-to-account join
+        // /kei/purse already trusts for the same reason (issue #24) — does the
+        // account behind this login token actually own this character.
+        const owns = await db.ownsCharacter(authData.token, authData.character_id);
+        if (!owns) {
+            Logger.error("[gameroom][onAuth] token does not own character " + authData.character_id + ", joining failed.");
+            return false;
+        }
+
         // character found, check if already logged in
         if (character.online > 0) {
             Logger.error("[gameroom][onAuth] client already connected. ", character);

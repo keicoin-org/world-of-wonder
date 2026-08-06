@@ -732,8 +732,12 @@ export async function startEconomy(options: EconomyOptions): Promise<Economy> {
     },
 
     async order(player, key, qty = 1) {
-      const data = ItemsDB[key] as ItemData | undefined
-      if (!data) throw new Error(`The shop does not sell "${key}".`)
+      // `ItemsDB` is a plain object literal, so a key like "toString" or
+      // "__proto__" resolves to something truthy on it without naming a real
+      // item — hasOwnProperty is what actually asks whether this shop sells
+      // it (issue #37).
+      if (!Object.prototype.hasOwnProperty.call(ItemsDB, key)) throw new Error(`The shop does not sell "${key}".`)
+      const data = ItemsDB[key] as ItemData
 
       const price = (data.value ?? 0) * qty
       const held = await gold.balanceOf(player)
